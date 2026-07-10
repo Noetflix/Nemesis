@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import discord
 from discord.ext import commands
@@ -74,6 +75,11 @@ def create_bot(config: Config) -> commands.Bot:
 
 def main() -> None:
     """Charge la configuration et lance le bot."""
+    # Console Windows parfois en cp1252/cp850 : on force l'UTF-8 pour les accents des logs.
+    # logging écrit sur stderr par défaut, d'où la reconfiguration des deux flux.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     logging.basicConfig(level=logging.INFO)
     config = load_config()
     bot = create_bot(config)
