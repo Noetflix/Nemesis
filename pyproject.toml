@@ -1,0 +1,24 @@
+[project]
+name = "nemesis"
+version = "0.1.0"
+description = "Bot Discord de statistiques League of Legends"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "discord-py>=2.4",
+    "python-dotenv>=1.0",
+    "riotwatcher>=3.3",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.10",
+]
+
+[tool.uv]
+# Application, pas une bibliothèque à publier : on ne construit aucun paquet.
+package = false
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100

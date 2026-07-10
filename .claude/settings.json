@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python .claude/hooks/ruff_on_edit.py"
+          }
+        ]
+      }
+    ]
+  }
+}

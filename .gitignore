@@ -1,0 +1,16 @@
+# Secrets — ne jamais committer
+.env
+
+# Environnement virtuel
+.venv/
+
+# Caches Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Outils
+.ruff_cache/
+
+# IDE
+.idea/
