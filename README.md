@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Logo Némésis" width="160">
+</p>
+
 # Némésis
 
 Bot Discord de statistiques **League of Legends** écrit en Python (discord.py + riotwatcher).
