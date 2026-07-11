@@ -25,6 +25,20 @@ class Config:
     classement_channel_id: int | None = None
     classement_heures: str = "10:00,20:00"  # heures « HH:MM » séparées par des virgules
     classement_tz: str = "Europe/Paris"
+    # Notification de fin de partie (classé solo/duo + flex). Salon dédié ; à défaut,
+    # on retombe sur le salon du classement. Sans aucun salon, la surveillance est off.
+    match_notif_channel_id: int | None = None
+    match_poll_minutes: int = 5  # intervalle de vérification des nouvelles parties
+    # GIF de victoire/défaite via Giphy (optionnel). Sans clé, un GIF de la liste curée
+    # intégrée est utilisé : la notif a donc toujours un GIF.
+    giphy_api_key: str | None = None
+    giphy_requete_victoire: str = "league of legends victory celebration"
+    giphy_requete_defaite: str = "sad defeat fail"
+
+    @property
+    def match_channel_effectif(self) -> int | None:
+        """Salon de notification de partie, avec repli sur le salon du classement."""
+        return self.match_notif_channel_id or self.classement_channel_id
 
 
 def load_config() -> Config:
@@ -68,6 +82,13 @@ def load_config() -> Config:
         classement_channel_id=_int_ou_none(os.getenv("CLASSEMENT_CHANNEL_ID")),
         classement_heures=os.getenv("CLASSEMENT_HEURES", "10:00,20:00"),
         classement_tz=os.getenv("CLASSEMENT_TZ", "Europe/Paris"),
+        match_notif_channel_id=_int_ou_none(os.getenv("MATCH_NOTIF_CHANNEL_ID")),
+        match_poll_minutes=_int_positif(os.getenv("MATCH_POLL_MINUTES"), defaut=5),
+        giphy_api_key=os.getenv("GIPHY_API_KEY"),
+        giphy_requete_victoire=os.getenv(
+            "GIPHY_REQUETE_VICTOIRE", "league of legends victory celebration"
+        ),
+        giphy_requete_defaite=os.getenv("GIPHY_REQUETE_DEFAITE", "sad defeat fail"),
     )
 
 
@@ -76,3 +97,9 @@ def _int_ou_none(valeur: str | None) -> int | None:
     if not valeur or not valeur.strip().isdigit():
         return None
     return int(valeur.strip())
+
+
+def _int_positif(valeur: str | None, *, defaut: int) -> int:
+    """Entier strictement positif depuis l'environnement, sinon la valeur par défaut."""
+    entier = _int_ou_none(valeur)
+    return entier if entier and entier > 0 else defaut
