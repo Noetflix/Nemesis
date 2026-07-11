@@ -3,7 +3,7 @@
 Flux MODERNE (ne jamais utiliser les endpoints par nom d'invocateur, obsolètes) :
 
     Riot ID (Pseudo#TAG) --Account-V1--> PUUID
-    PUUID                --Summoner-V4--> niveau
+    PUUID                --Summoner-V4--> niveau + icône
     PUUID                --League-V4---> rang / LP
     PUUID                --Match-V5----> IDs de parties -> détails
 
@@ -33,9 +33,86 @@ PLATFORM_TO_REGION: dict[str, str] = {
     "oc1": "sea",
 }
 
+# Noms lisibles des files de jeu (queueId renvoyé par Match-V5).
+QUEUE_NAMES: dict[int, str] = {
+    400: "Normale Draft",
+    420: "Classée Solo/Duo",
+    430: "Normale Blind",
+    440: "Classée Flexible",
+    450: "ARAM",
+    490: "Normale (Quickplay)",
+    700: "Clash",
+    720: "ARAM Clash",
+    900: "URF",
+    1020: "One for All",
+    1700: "Arena",
+    1710: "Arena",
+}
+
+# Version Data Dragon de secours si l'appel réseau échoue (images non critiques).
+_DDRAGON_FALLBACK_VERSION = "15.13.1"
+
 
 class RiotIdError(ValueError):
     """Riot ID mal formé (le « # » séparateur est absent)."""
+
+
+@dataclass(frozen=True)
+class RankInfo:
+    """Rang classé d'un joueur en file solo/duo."""
+
+    tier: str  # « GOLD », ou « » si non classé.
+    division: str  # « IV », vide pour Master et au-dessus.
+    league_points: int
+    wins: int
+    losses: int
+
+    @property
+    def is_ranked(self) -> bool:
+        """Vrai si le joueur possède un rang en solo/duo."""
+        return bool(self.tier)
+
+    @property
+    def total_games(self) -> int:
+        """Nombre de parties classées jouées cette saison."""
+        return self.wins + self.losses
+
+    @property
+    def winrate(self) -> float | None:
+        """Winrate classé en pourcentage, ou None sans partie jouée."""
+        if self.total_games == 0:
+            return None
+        return self.wins / self.total_games * 100
+
+
+@dataclass(frozen=True)
+class RecentGame:
+    """Résumé d'une partie récente pour l'affichage."""
+
+    champion: str
+    kills: int
+    deaths: int
+    assists: int
+    win: bool
+    queue_id: int
+    duration_s: int
+    cs: int
+
+    @property
+    def kda_ratio(self) -> float:
+        """Ratio (K + A) / D ; une seule mort minimum pour éviter la division par zéro."""
+        return (self.kills + self.assists) / max(self.deaths, 1)
+
+    @property
+    def queue_name(self) -> str:
+        """Nom lisible de la file de jeu."""
+        return QUEUE_NAMES.get(self.queue_id, "Partie personnalisée")
+
+    @property
+    def cs_per_min(self) -> float:
+        """Sbires par minute (indicateur de farm)."""
+        minutes = self.duration_s / 60
+        return self.cs / minutes if minutes else 0.0
 
 
 @dataclass(frozen=True)
@@ -45,9 +122,23 @@ class PlayerSummary:
     game_name: str
     tag_line: str
     level: int
-    rank: str
-    winrate: str
-    recent: list[str]
+    profile_icon_id: int
+    ddragon_version: str
+    rank: RankInfo
+    recent: list[RecentGame]
+
+    @property
+    def profile_icon_url(self) -> str:
+        """URL Data Dragon de l'icône d'invocateur (miniature de l'embed)."""
+        return (
+            f"https://ddragon.leagueoflegends.com/cdn/{self.ddragon_version}"
+            f"/img/profileicon/{self.profile_icon_id}.png"
+        )
+
+    @property
+    def recent_wins(self) -> int:
+        """Nombre de victoires parmi les parties récentes."""
+        return sum(1 for game in self.recent if game.win)
 
 
 def parse_riot_id(riot_id: str) -> tuple[str, str]:
@@ -73,6 +164,8 @@ class RiotClient:
         self.region = PLATFORM_TO_REGION.get(platform, "europe")
         self._lol = LolWatcher(api_key)
         self._riot = RiotWatcher(api_key)
+        # Version Data Dragon mise en cache après le premier appel.
+        self._ddragon_version: str | None = None
 
     def get_player_summary(self, riot_id: str) -> PlayerSummary:
         """Agrège niveau, rang, winrate et dernières parties d'un Riot ID."""
@@ -82,53 +175,62 @@ class RiotClient:
         account = self._riot.account.by_riot_id(self.region, game_name, tag_line)
         puuid = account["puuid"]
 
-        # 2) Summoner-V4 (plateforme) : niveau d'invocateur.
+        # 2) Summoner-V4 (plateforme) : niveau et icône d'invocateur.
         summoner = self._lol.summoner.by_puuid(self.platform, puuid)
         level = int(summoner["summonerLevel"])
+        profile_icon_id = int(summoner.get("profileIconId", 0))
 
         # 3) League-V4 (plateforme) : rang de la file classée solo.
         rank = self._extract_solo_rank(self._lol.league.by_puuid(self.platform, puuid))
 
-        # 4) Match-V5 (cluster régional) : dernières parties -> lignes de résumé.
-        recent, winrate = self._recent_games(puuid)
+        # 4) Match-V5 (cluster régional) : dernières parties -> objets RecentGame.
+        recent = self._recent_games(puuid)
 
         return PlayerSummary(
             game_name=account.get("gameName", game_name),
             tag_line=account.get("tagLine", tag_line),
             level=level,
+            profile_icon_id=profile_icon_id,
+            ddragon_version=self._latest_ddragon_version(),
             rank=rank,
-            winrate=winrate,
             recent=recent,
         )
 
+    def _latest_ddragon_version(self) -> str:
+        """Dernière version Data Dragon (mise en cache) pour construire les URLs d'images."""
+        if self._ddragon_version is None:
+            try:
+                self._ddragon_version = self._lol.data_dragon.versions_all()[0]
+            except Exception:  # noqa: BLE001 — images non critiques, on dégrade proprement.
+                self._ddragon_version = _DDRAGON_FALLBACK_VERSION
+        return self._ddragon_version
+
     @staticmethod
-    def _extract_solo_rank(entries: list[dict]) -> str:
+    def _extract_solo_rank(entries: list[dict]) -> RankInfo:
         """Extrait le rang RANKED_SOLO_5x5 depuis les entrées League-V4."""
         for entry in entries:
             if entry.get("queueType") == "RANKED_SOLO_5x5":
-                tier = entry.get("tier", "").capitalize()
-                division = entry.get("rank", "")
-                lp = entry.get("leaguePoints", 0)
-                return f"{tier} {division} ({lp} LP)"
-        return "Non classé"
+                return RankInfo(
+                    tier=entry.get("tier", ""),
+                    division=entry.get("rank", ""),
+                    league_points=int(entry.get("leaguePoints", 0)),
+                    wins=int(entry.get("wins", 0)),
+                    losses=int(entry.get("losses", 0)),
+                )
+        return RankInfo(tier="", division="", league_points=0, wins=0, losses=0)
 
-    def _recent_games(self, puuid: str, count: int = 5) -> tuple[list[str], str]:
-        """Renvoie les lignes de résumé des dernières parties et le winrate."""
+    def _recent_games(self, puuid: str, count: int = 5) -> list[RecentGame]:
+        """Renvoie les dernières parties du joueur sous forme d'objets RecentGame."""
         match_ids = self._lol.match.matchlist_by_puuid(self.region, puuid, count=count)
 
-        lignes: list[str] = []
-        victoires = 0
+        parties: list[RecentGame] = []
         for match_id in match_ids:
             match = self._lol.match.by_id(self.region, match_id)
             participant = self._find_participant(match, puuid)
             if participant is None:
                 continue
-            if participant.get("win"):
-                victoires += 1
-            lignes.append(self._format_game(participant))
-
-        winrate = self._format_winrate(victoires, len(lignes))
-        return lignes, winrate
+            parties.append(self._build_game(participant, match.get("info", {})))
+        return parties
 
     @staticmethod
     def _find_participant(match: dict, puuid: str) -> dict | None:
@@ -139,28 +241,30 @@ class RiotClient:
         return None
 
     @staticmethod
-    def _format_game(participant: dict) -> str:
-        """Formate une partie en « Victoire — Ahri (8/2/10) »."""
-        issue = "Victoire" if participant.get("win") else "Défaite"
-        champion = participant.get("championName", "?")
-        k = participant.get("kills", 0)
-        d = participant.get("deaths", 0)
-        a = participant.get("assists", 0)
-        return f"{issue} — {champion} ({k}/{d}/{a})"
-
-    @staticmethod
-    def _format_winrate(victoires: int, total: int) -> str:
-        """Formate le winrate en pourcentage sur les parties analysées."""
-        if total == 0:
-            return "N/A"
-        pourcentage = round(victoires / total * 100)
-        return f"{pourcentage}% ({victoires}/{total})"
+    def _build_game(participant: dict, info: dict) -> RecentGame:
+        """Construit un RecentGame depuis un participant et les infos de partie."""
+        cs = int(participant.get("totalMinionsKilled", 0)) + int(
+            participant.get("neutralMinionsKilled", 0)
+        )
+        return RecentGame(
+            champion=participant.get("championName", "?"),
+            kills=int(participant.get("kills", 0)),
+            deaths=int(participant.get("deaths", 0)),
+            assists=int(participant.get("assists", 0)),
+            win=bool(participant.get("win")),
+            queue_id=int(info.get("queueId", 0)),
+            duration_s=int(info.get("gameDuration", 0)),
+            cs=cs,
+        )
 
 
 __all__ = [
     "ApiError",
     "PLATFORM_TO_REGION",
     "PlayerSummary",
+    "QUEUE_NAMES",
+    "RankInfo",
+    "RecentGame",
     "RiotClient",
     "RiotIdError",
     "parse_riot_id",
