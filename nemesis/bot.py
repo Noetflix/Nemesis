@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from nemesis import trashtalk
 from nemesis.config import Config, load_config
@@ -169,6 +171,35 @@ async def _reply_embed(ctx: commands.Context, embed: discord.Embed) -> None:
         await ctx.reply(embed=embed)
 
 
+async def _post_embed(channel: discord.abc.Messageable, embed: discord.Embed) -> None:
+    """Poste un embed dans un salon (classement automatique), avec le logo joint."""
+    if _LOGO_PATH.is_file():
+        await channel.send(embed=embed, file=discord.File(_LOGO_PATH, filename="logo.png"))
+    else:
+        await channel.send(embed=embed)
+
+
+def _parse_heures(spec: str, tz_nom: str) -> list[datetime.time]:
+    """Transforme « HH:MM,HH:MM » + fuseau en heures de déclenchement (aware)."""
+    try:
+        tz = ZoneInfo(tz_nom)
+    except ZoneInfoNotFoundError, ValueError:
+        logger.warning("Fuseau horaire invalide %r, repli sur UTC.", tz_nom)
+        tz = datetime.timezone.utc
+
+    heures: list[datetime.time] = []
+    for morceau in spec.split(","):
+        morceau = morceau.strip()
+        if not morceau:
+            continue
+        try:
+            h, m = (int(x) for x in morceau.split(":"))
+            heures.append(datetime.time(hour=h, minute=m, tzinfo=tz))
+        except ValueError:
+            logger.warning("Heure de classement invalide ignorée : %r", morceau)
+    return heures
+
+
 def _rang_court(rank: RankInfo) -> str:
     """Rang en texte brut (sans emoji), pour décrire le joueur à Claude."""
     if not rank.is_ranked:
@@ -222,6 +253,50 @@ def _build_leaderboard_embed(
     return embed
 
 
+async def _preparer_classement(riot: RiotClient, config: Config) -> discord.Embed:
+    """Récupère les rangs, génère les vannes et renvoie l'embed du classement.
+
+    Un joueur introuvable est isolé sans casser le tout ; si aucun n'est récupéré,
+    renvoie un embed d'erreur. Partagé par la commande !classement et la planification.
+    """
+    joueurs: list[PlayerRank] = []
+    erreurs: list[tuple[str, str]] = []
+    for riot_id in TEAM_ROSTER:
+        try:
+            joueurs.append(riot.get_rank(riot_id))
+        except RiotIdError as exc:
+            erreurs.append((riot_id, str(exc)))
+        except ApiError as exc:
+            erreurs.append((riot_id, _explain_api_error(exc)))
+
+    # Aucun joueur récupéré : on renvoie l'erreur (souvent clé 403 expirée).
+    if not joueurs:
+        detail = "\n".join(f"• `{riot_id}` — {err}" for riot_id, err in erreurs)
+        return _error_embed(f"Impossible de récupérer le classement.\n{detail}")
+
+    # Tri par rang décroissant : le meilleur en tête.
+    joueurs.sort(key=lambda player: player.rank.score, reverse=True)
+
+    # Vannes générées par l'IA (ou repli local), une par joueur dans l'ordre.
+    lignes = [
+        trashtalk.LigneClassement(
+            position=position,
+            total=len(joueurs),
+            nom=joueur.game_name,
+            rang=_rang_court(joueur.rank),
+            is_ranked=joueur.rank.is_ranked,
+        )
+        for position, joueur in enumerate(joueurs, start=1)
+    ]
+    vannes = await trashtalk.generer_vannes(
+        lignes,
+        api_key=config.llm_api_key,
+        base_url=config.llm_base_url,
+        model=config.llm_model,
+    )
+    return _build_leaderboard_embed(joueurs, erreurs, vannes)
+
+
 def create_bot(config: Config) -> commands.Bot:
     """Construit le bot, ses intents et enregistre les commandes."""
     # Intents : le contenu des messages est requis pour lire les commandes texte.
@@ -232,10 +307,6 @@ def create_bot(config: Config) -> commands.Bot:
 
     bot = commands.Bot(command_prefix=config.command_prefix, intents=intents)
     riot = RiotClient(config.riot_api_key, platform=config.default_platform)
-
-    @bot.event
-    async def on_ready() -> None:
-        logger.info("Connecté en tant que %s (id=%s)", bot.user, bot.user.id if bot.user else "?")
 
     @bot.command(name="stats")
     async def stats(ctx: commands.Context, *, riot_id: str) -> None:
@@ -256,49 +327,42 @@ def create_bot(config: Config) -> commands.Bot:
     @bot.command(name="classement")
     async def classement(ctx: commands.Context) -> None:
         """Affiche le classement Solo/Duo de la team : !classement."""
-        # Un joueur introuvable ne doit pas faire échouer tout le classement :
-        # on collecte les succès et les erreurs séparément.
+        # « en train d'écrire » pendant les appels réseau (Riot + IA).
         async with ctx.typing():
-            joueurs: list[PlayerRank] = []
-            erreurs: list[tuple[str, str]] = []
-            for riot_id in TEAM_ROSTER:
-                try:
-                    joueurs.append(riot.get_rank(riot_id))
-                except RiotIdError as exc:
-                    erreurs.append((riot_id, str(exc)))
-                except ApiError as exc:
-                    erreurs.append((riot_id, _explain_api_error(exc)))
+            embed = await _preparer_classement(riot, config)
+        await _reply_embed(ctx, embed)
 
-            # Aucun joueur récupéré : on affiche l'erreur (souvent clé 403 expirée).
-            if not joueurs:
-                detail = "\n".join(f"• `{riot_id}` — {err}" for riot_id, err in erreurs)
-                await _reply_embed(
-                    ctx, _error_embed(f"Impossible de récupérer le classement.\n{detail}")
-                )
-                return
+    # Planification : poste le classement dans un salon aux heures configurées.
+    heures = _parse_heures(config.classement_heures, config.classement_tz)
 
-            # Tri par rang décroissant : le meilleur en tête.
-            joueurs.sort(key=lambda player: player.rank.score, reverse=True)
-
-            # Vannes générées par Claude (ou repli local), une par joueur dans l'ordre.
-            lignes = [
-                trashtalk.LigneClassement(
-                    position=position,
-                    total=len(joueurs),
-                    nom=joueur.game_name,
-                    rang=_rang_court(joueur.rank),
-                    is_ranked=joueur.rank.is_ranked,
-                )
-                for position, joueur in enumerate(joueurs, start=1)
-            ]
-            vannes = await trashtalk.generer_vannes(
-                lignes,
-                api_key=config.llm_api_key,
-                base_url=config.llm_base_url,
-                model=config.llm_model,
+    @tasks.loop(time=heures)
+    async def classement_planifie() -> None:
+        salon = bot.get_channel(config.classement_channel_id)
+        if salon is None:
+            logger.warning(
+                "Salon de classement introuvable (id=%s) : publication ignorée.",
+                config.classement_channel_id,
             )
+            return
+        embed = await _preparer_classement(riot, config)
+        await _post_embed(salon, embed)
 
-        await _reply_embed(ctx, _build_leaderboard_embed(joueurs, erreurs, vannes))
+    @classement_planifie.before_loop
+    async def _avant_classement() -> None:
+        await bot.wait_until_ready()
+
+    @bot.event
+    async def on_ready() -> None:
+        logger.info("Connecté en tant que %s (id=%s)", bot.user, bot.user.id if bot.user else "?")
+        # Démarre la planification une seule fois, si un salon et des heures sont définis.
+        if config.classement_channel_id and heures and not classement_planifie.is_running():
+            classement_planifie.start()
+            logger.info(
+                "Classement automatique programmé à %s (%s) dans le salon %s.",
+                config.classement_heures,
+                config.classement_tz,
+                config.classement_channel_id,
+            )
 
     return bot
 
