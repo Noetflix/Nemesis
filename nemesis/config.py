@@ -16,8 +16,11 @@ class Config:
     riot_api_key: str
     command_prefix: str = "!"
     default_platform: str = "euw1"
-    # Optionnelle : active les vannes générées par Claude dans !classement.
-    anthropic_api_key: str | None = None
+    # LLM (compatible OpenAI) pour les vannes du !classement. La clé est optionnelle :
+    # sans elle, un générateur local prend le relais. Défauts = Groq (gratuit).
+    llm_api_key: str | None = None
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    llm_model: str = "llama-3.3-70b-versatile"
 
 
 def load_config() -> Config:
@@ -55,5 +58,7 @@ def load_config() -> Config:
         riot_api_key=riot_api_key,
         command_prefix=os.getenv("COMMAND_PREFIX", "!"),
         default_platform=os.getenv("DEFAULT_PLATFORM", "euw1"),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_base_url=os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
+        llm_model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
     )

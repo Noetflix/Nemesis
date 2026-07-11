@@ -291,7 +291,12 @@ def create_bot(config: Config) -> commands.Bot:
                 )
                 for position, joueur in enumerate(joueurs, start=1)
             ]
-            vannes = await trashtalk.generer_vannes(lignes, api_key=config.anthropic_api_key)
+            vannes = await trashtalk.generer_vannes(
+                lignes,
+                api_key=config.llm_api_key,
+                base_url=config.llm_base_url,
+                model=config.llm_model,
+            )
 
         await _reply_embed(ctx, _build_leaderboard_embed(joueurs, erreurs, vannes))
 
