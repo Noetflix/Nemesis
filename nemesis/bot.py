@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import sys
 from pathlib import Path
 
@@ -10,7 +11,14 @@ import discord
 from discord.ext import commands
 
 from nemesis.config import Config, load_config
-from nemesis.riot import ApiError, PlayerSummary, RecentGame, RiotClient, RiotIdError
+from nemesis.riot import (
+    ApiError,
+    PlayerRank,
+    PlayerSummary,
+    RecentGame,
+    RiotClient,
+    RiotIdError,
+)
 
 logger = logging.getLogger("nemesis")
 
@@ -45,6 +53,44 @@ RANK_EMOJIS: dict[str, str] = {
     "GRANDMASTER": "🔥",
     "CHALLENGER": "👑",
 }
+
+# Roster de la team suivi par la commande !classement.
+TEAM_ROSTER: list[str] = [
+    "OT Noetflix#T1WIN",
+    "OT Néons#KCORP",
+    "OT BaGeR#BGR",
+    "Rat Yote#5234",
+    "CAP#7459",
+]
+
+# Médailles pour les trois premières places du classement.
+_MEDALS: dict[int, str] = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+# Répliques de trash-talk (entre potes), tirées au hasard selon la position.
+_TRASH_TOP: list[str] = [
+    "Le boss final 👑 personne ne conteste.",
+    "Carry la team pendant que les autres feed 🐐",
+    "Premier. Comme d'hab. Ça en devient gênant pour les autres 😏",
+    "Le seul qui a compris que le but c'est de gagner 🧠",
+]
+_TRASH_MID: list[str] = [
+    "Ni trop haut, ni trop bas : le stratège de l'ombre 🥷",
+    "Solide, sans plus. On te surveille 👀",
+    "T'es pas dernier, c'est déjà une victoire 🍺",
+    "Le ventre mou du classement, confortable là-dedans ? 🛋️",
+]
+_TRASH_LAST: list[str] = [
+    "La lanterne rouge 🔴 quelqu'un lui rappelle les règles ?",
+    "Dernier… mais premier dans nos cœurs 💔",
+    "Désinstalle. On plaisante. (ou pas) 🤡",
+    "Le carry inversé, un vrai talent 🎪",
+]
+_TRASH_UNRANKED: list[str] = [
+    "Pas classé = pas de preuves 🕵️",
+    "Toujours coincé dans ses games de placement 😴",
+    "Le courage de ne jamais lancer une classée 🫡",
+    "Elo tellement secret que même Riot le trouve pas 👻",
+]
 
 
 def _explain_api_error(error: ApiError) -> str:
@@ -148,6 +194,62 @@ async def _reply_embed(ctx: commands.Context, embed: discord.Embed) -> None:
         await ctx.reply(embed=embed)
 
 
+def _trash_talk(position: int, total: int, is_ranked: bool) -> str:
+    """Choisit une réplique de trash-talk selon la place au classement."""
+    if not is_ranked:
+        return random.choice(_TRASH_UNRANKED)
+    if position == 1:
+        return random.choice(_TRASH_TOP)
+    if position == total:
+        return random.choice(_TRASH_LAST)
+    return random.choice(_TRASH_MID)
+
+
+def _format_leaderboard_entry(position: int, player: PlayerRank, total: int) -> str:
+    """Formate une entrée du classement : médaille, rang, winrate et vanne."""
+    medal = _MEDALS.get(position, f"`#{position}`")
+    rank = player.rank
+    if rank.is_ranked:
+        emoji = RANK_EMOJIS.get(rank.tier.upper(), "🎖️")
+        division = f" {rank.division}" if rank.division else ""
+        winrate = f" · ⚔️ {rank.winrate:.0f}%" if rank.winrate is not None else ""
+        rank_txt = (
+            f"{emoji} **{rank.tier.capitalize()}{division}** · {rank.league_points} LP{winrate}"
+        )
+    else:
+        rank_txt = "🎖️ *Non classé*"
+    trash = _trash_talk(position, total, rank.is_ranked)
+    return f"{medal} **{player.game_name}** `#{player.tag_line}`\n{rank_txt}\n> *{trash}*"
+
+
+def _build_leaderboard_embed(
+    players: list[PlayerRank], erreurs: list[tuple[str, str]]
+) -> discord.Embed:
+    """Construit l'embed du classement (joueurs triés par rang décroissant)."""
+    embed = discord.Embed(title="🏆 Classement Solo/Duo de la team", color=discord.Color.gold())
+    embed.set_author(name="Némésis · Classement", icon_url=_LOGO_ATTACHMENT)
+
+    # Miniature = icône du leader, pour couronner le premier visuellement.
+    leader = players[0]
+    if leader.profile_icon_id:
+        embed.set_thumbnail(url=leader.profile_icon_url)
+
+    lignes = [
+        _format_leaderboard_entry(position, player, len(players))
+        for position, player in enumerate(players, start=1)
+    ]
+    embed.description = "\n\n".join(lignes)
+
+    # Joueurs non récupérés (Riot ID introuvable, etc.) listés à part.
+    if erreurs:
+        introuvables = "\n".join(f"• `{riot_id}`" for riot_id, _ in erreurs)
+        embed.add_field(name="👻 Fantômes (introuvables)", value=introuvables, inline=False)
+
+    embed.set_footer(text="Némésis • Classement mis à jour", icon_url=_LOGO_ATTACHMENT)
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
 def create_bot(config: Config) -> commands.Bot:
     """Construit le bot, ses intents et enregistre les commandes."""
     # Intents : le contenu des messages est requis pour lire les commandes texte.
@@ -178,6 +280,34 @@ def create_bot(config: Config) -> commands.Bot:
                 return
 
         await _reply_embed(ctx, _build_stats_embed(summary))
+
+    @bot.command(name="classement")
+    async def classement(ctx: commands.Context) -> None:
+        """Affiche le classement Solo/Duo de la team : !classement."""
+        # Un joueur introuvable ne doit pas faire échouer tout le classement :
+        # on collecte les succès et les erreurs séparément.
+        async with ctx.typing():
+            joueurs: list[PlayerRank] = []
+            erreurs: list[tuple[str, str]] = []
+            for riot_id in TEAM_ROSTER:
+                try:
+                    joueurs.append(riot.get_rank(riot_id))
+                except RiotIdError as exc:
+                    erreurs.append((riot_id, str(exc)))
+                except ApiError as exc:
+                    erreurs.append((riot_id, _explain_api_error(exc)))
+
+        # Aucun joueur récupéré : on affiche l'erreur (souvent clé 403 expirée).
+        if not joueurs:
+            detail = "\n".join(f"• `{riot_id}` — {err}" for riot_id, err in erreurs)
+            await _reply_embed(
+                ctx, _error_embed(f"Impossible de récupérer le classement.\n{detail}")
+            )
+            return
+
+        # Tri par rang décroissant : le meilleur en tête.
+        joueurs.sort(key=lambda player: player.rank.score, reverse=True)
+        await _reply_embed(ctx, _build_leaderboard_embed(joueurs, erreurs))
 
     return bot
 
