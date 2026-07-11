@@ -21,6 +21,10 @@ class Config:
     llm_api_key: str | None = None
     llm_base_url: str = "https://api.groq.com/openai/v1"
     llm_model: str = "llama-3.3-70b-versatile"
+    # Classement automatique. Sans salon défini, la planification est désactivée.
+    classement_channel_id: int | None = None
+    classement_heures: str = "10:00,20:00"  # heures « HH:MM » séparées par des virgules
+    classement_tz: str = "Europe/Paris"
 
 
 def load_config() -> Config:
@@ -61,4 +65,14 @@ def load_config() -> Config:
         llm_api_key=os.getenv("LLM_API_KEY"),
         llm_base_url=os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
         llm_model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
+        classement_channel_id=_int_ou_none(os.getenv("CLASSEMENT_CHANNEL_ID")),
+        classement_heures=os.getenv("CLASSEMENT_HEURES", "10:00,20:00"),
+        classement_tz=os.getenv("CLASSEMENT_TZ", "Europe/Paris"),
     )
+
+
+def _int_ou_none(valeur: str | None) -> int | None:
+    """Convertit une variable d'environnement en entier, ou None si vide/invalide."""
+    if not valeur or not valeur.strip().isdigit():
+        return None
+    return int(valeur.strip())

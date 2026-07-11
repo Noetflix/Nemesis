@@ -9,6 +9,7 @@ dependencies = [
     "openai>=2.45.0",
     "python-dotenv>=1.0",
     "riotwatcher>=3.3",
+    "tzdata>=2026.3",
 ]
 
 [dependency-groups]
