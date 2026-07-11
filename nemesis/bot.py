@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-import random
 import sys
 from pathlib import Path
 
 import discord
 from discord.ext import commands
 
+from nemesis import trashtalk
 from nemesis.config import Config, load_config
 from nemesis.riot import (
     ApiError,
@@ -65,32 +65,6 @@ TEAM_ROSTER: list[str] = [
 
 # Médailles pour les trois premières places du classement.
 _MEDALS: dict[int, str] = {1: "🥇", 2: "🥈", 3: "🥉"}
-
-# Répliques de trash-talk (entre potes), tirées au hasard selon la position.
-_TRASH_TOP: list[str] = [
-    "Le boss final 👑 personne ne conteste.",
-    "Carry la team pendant que les autres feed 🐐",
-    "Premier. Comme d'hab. Ça en devient gênant pour les autres 😏",
-    "Le seul qui a compris que le but c'est de gagner 🧠",
-]
-_TRASH_MID: list[str] = [
-    "Ni trop haut, ni trop bas : le stratège de l'ombre 🥷",
-    "Solide, sans plus. On te surveille 👀",
-    "T'es pas dernier, c'est déjà une victoire 🍺",
-    "Le ventre mou du classement, confortable là-dedans ? 🛋️",
-]
-_TRASH_LAST: list[str] = [
-    "La lanterne rouge 🔴 quelqu'un lui rappelle les règles ?",
-    "Dernier… mais premier dans nos cœurs 💔",
-    "Désinstalle. On plaisante. (ou pas) 🤡",
-    "Le carry inversé, un vrai talent 🎪",
-]
-_TRASH_UNRANKED: list[str] = [
-    "Pas classé = pas de preuves 🕵️",
-    "Toujours coincé dans ses games de placement 😴",
-    "Le courage de ne jamais lancer une classée 🫡",
-    "Elo tellement secret que même Riot le trouve pas 👻",
-]
 
 
 def _explain_api_error(error: ApiError) -> str:
@@ -194,17 +168,6 @@ async def _reply_embed(ctx: commands.Context, embed: discord.Embed) -> None:
         await ctx.reply(embed=embed)
 
 
-def _trash_talk(position: int, total: int, is_ranked: bool) -> str:
-    """Choisit une réplique de trash-talk selon la place au classement."""
-    if not is_ranked:
-        return random.choice(_TRASH_UNRANKED)
-    if position == 1:
-        return random.choice(_TRASH_TOP)
-    if position == total:
-        return random.choice(_TRASH_LAST)
-    return random.choice(_TRASH_MID)
-
-
 def _format_leaderboard_entry(position: int, player: PlayerRank, total: int) -> str:
     """Formate une entrée du classement : médaille, rang, winrate et vanne."""
     medal = _MEDALS.get(position, f"`#{position}`")
@@ -218,7 +181,7 @@ def _format_leaderboard_entry(position: int, player: PlayerRank, total: int) -> 
         )
     else:
         rank_txt = "🎖️ *Non classé*"
-    trash = _trash_talk(position, total, rank.is_ranked)
+    trash = trashtalk.generer(position, total, rank.is_ranked)
     return f"{medal} **{player.game_name}** `#{player.tag_line}`\n{rank_txt}\n> *{trash}*"
 
 
