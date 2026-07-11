@@ -1,14 +1,46 @@
-"""Générateur de répliques de trash-talk pour le classement.
+"""Génération des répliques de trash-talk pour le classement.
 
-Les phrases ne sont pas écrites en dur : elles sont **assemblées** à la volée à partir de
-fragments (étiquette + pique + emoji) selon la position du joueur au classement. Chaque
-catégorie combine ses banques de mots, ce qui donne des dizaines de variantes possibles.
+Deux sources, dans l'ordre :
+
+1. **Claude** (API Anthropic) — si une clé est fournie, un seul appel génère une vanne
+   sur mesure par joueur, en voyant tout le classement d'un coup. C'est le mode nominal :
+   les phrases sont écrites par le modèle, pas puisées dans des tableaux à maintenir.
+2. **Repli procédural** — sans clé (ou en cas d'erreur réseau), les phrases sont assemblées
+   localement à partir de fragments (étiquette + pique + emoji) selon la position.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import random
 from dataclasses import dataclass
+
+from anthropic import AsyncAnthropic
+
+logger = logging.getLogger("nemesis")
+
+# Modèle Claude utilisé pour générer les vannes.
+_MODELE = "claude-opus-4-8"
+
+# Consigne donnée à Claude : le ton et le cadre du trash-talk.
+_SYSTEME = (
+    "Tu es Némésis, un bot Discord qui chambre une bande de potes sur leurs stats "
+    "League of Legends. Pour chaque joueur du classement, écris UNE vanne courte "
+    "(120 caractères max), drôle et en français, dans un style trash-talk bon enfant "
+    "entre amis. Adapte-toi à la position et au rang : chambre le premier pour son "
+    "arrogance, achève le dernier, taquine le milieu, raille les non-classés. Reste "
+    "piquant sans être méchant ni vulgaire, varie le ton, et termine chaque vanne par "
+    "un emoji pertinent."
+)
+
+# Schéma de sortie structurée : un tableau de vannes, une par joueur, dans l'ordre.
+_SCHEMA: dict = {
+    "type": "object",
+    "properties": {"vannes": {"type": "array", "items": {"type": "string"}}},
+    "required": ["vannes"],
+    "additionalProperties": False,
+}
 
 # Catégories de position, de la meilleure à la pire.
 TOP = "top"
@@ -112,6 +144,56 @@ _BANQUES: dict[str, _Banque] = {
         gabarits=_GABARITS_COMMUNS + ("{etiquette} {emoji}",),
     ),
 }
+
+
+@dataclass(frozen=True)
+class LigneClassement:
+    """Un joueur du classement, tel que présenté au générateur de vannes."""
+
+    position: int
+    total: int
+    nom: str
+    rang: str  # ex. « Gold II (44 LP, 58% WR) » ou « Non classé ».
+    is_ranked: bool
+
+
+async def generer_vannes(lignes: list[LigneClassement], *, api_key: str | None) -> list[str]:
+    """Renvoie une vanne par joueur (dans l'ordre) via Claude, ou le repli procédural.
+
+    Ne lève jamais : toute erreur (pas de clé, réseau, réponse invalide) retombe sur le
+    générateur local pour ne pas casser l'affichage du classement.
+    """
+    if not api_key:
+        return [generer(ligne.position, ligne.total, ligne.is_ranked) for ligne in lignes]
+    try:
+        return await _generer_via_claude(lignes, api_key)
+    except Exception:  # noqa: BLE001 — l'IA est un bonus, jamais un point de rupture.
+        logger.warning("Vannes Claude indisponibles, repli sur le générateur local.", exc_info=True)
+        return [generer(ligne.position, ligne.total, ligne.is_ranked) for ligne in lignes]
+
+
+async def _generer_via_claude(lignes: list[LigneClassement], api_key: str) -> list[str]:
+    """Un seul appel Claude renvoie toutes les vannes du classement (sortie JSON)."""
+    classement = "\n".join(f"{ligne.position}. {ligne.nom} — {ligne.rang}" for ligne in lignes)
+    message = (
+        f"Voici le classement Solo/Duo de la team, du meilleur au pire :\n\n{classement}\n\n"
+        f"Renvoie exactement {len(lignes)} vannes, une par joueur, dans le même ordre."
+    )
+
+    async with AsyncAnthropic(api_key=api_key) as client:
+        response = await client.messages.create(
+            model=_MODELE,
+            max_tokens=1024,
+            system=_SYSTEME,
+            messages=[{"role": "user", "content": message}],
+            output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+
+    texte = next(bloc.text for bloc in response.content if bloc.type == "text")
+    vannes = json.loads(texte)["vannes"]
+    if len(vannes) != len(lignes):
+        raise ValueError("Nombre de vannes renvoyé différent du nombre de joueurs.")
+    return [str(vanne) for vanne in vannes]
 
 
 def categorie(position: int, total: int, is_ranked: bool) -> str:
