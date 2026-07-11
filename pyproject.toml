@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "discord-py>=2.4",
+    "openai>=2.45.0",
     "python-dotenv>=1.0",
     "riotwatcher>=3.3",
 ]

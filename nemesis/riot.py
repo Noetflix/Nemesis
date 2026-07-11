@@ -52,6 +52,21 @@ QUEUE_NAMES: dict[int, str] = {
 # Version Data Dragon de secours si l'appel réseau échoue (images non critiques).
 _DDRAGON_FALLBACK_VERSION = "15.13.1"
 
+# Ordre des paliers et divisions pour classer les joueurs entre eux.
+_TIER_ORDER: dict[str, int] = {
+    "IRON": 0,
+    "BRONZE": 1,
+    "SILVER": 2,
+    "GOLD": 3,
+    "PLATINUM": 4,
+    "EMERALD": 5,
+    "DIAMOND": 6,
+    "MASTER": 7,
+    "GRANDMASTER": 8,
+    "CHALLENGER": 9,
+}
+_DIVISION_ORDER: dict[str, int] = {"IV": 0, "III": 1, "II": 2, "I": 3}
+
 
 class RiotIdError(ValueError):
     """Riot ID mal formé (le « # » séparateur est absent)."""
@@ -83,6 +98,16 @@ class RankInfo:
         if self.total_games == 0:
             return None
         return self.wins / self.total_games * 100
+
+    @property
+    def score(self) -> int:
+        """Score numérique croissant pour trier les joueurs (non classé = -1)."""
+        if not self.is_ranked:
+            return -1
+        tier = _TIER_ORDER.get(self.tier.upper(), 0)
+        division = _DIVISION_ORDER.get(self.division.upper(), 0)
+        # Palier dominant, puis division, puis LP : aucun chevauchement possible.
+        return tier * 100_000 + division * 1_000 + self.league_points
 
 
 @dataclass(frozen=True)
@@ -141,6 +166,26 @@ class PlayerSummary:
         return sum(1 for game in self.recent if game.win)
 
 
+@dataclass(frozen=True)
+class PlayerRank:
+    """Résumé léger d'un joueur pour le classement (sans les parties récentes)."""
+
+    game_name: str
+    tag_line: str
+    level: int
+    profile_icon_id: int
+    ddragon_version: str
+    rank: RankInfo
+
+    @property
+    def profile_icon_url(self) -> str:
+        """URL Data Dragon de l'icône d'invocateur."""
+        return (
+            f"https://ddragon.leagueoflegends.com/cdn/{self.ddragon_version}"
+            f"/img/profileicon/{self.profile_icon_id}.png"
+        )
+
+
 def parse_riot_id(riot_id: str) -> tuple[str, str]:
     """Découpe « Pseudo#TAG » en (game_name, tag_line).
 
@@ -194,6 +239,32 @@ class RiotClient:
             ddragon_version=self._latest_ddragon_version(),
             rank=rank,
             recent=recent,
+        )
+
+    def get_rank(self, riot_id: str) -> PlayerRank:
+        """Récupère niveau, icône et rang classé d'un joueur (léger, pour le classement).
+
+        Ne fait pas d'appel Match-V5 : idéal pour interroger plusieurs joueurs à la suite.
+        """
+        game_name, tag_line = parse_riot_id(riot_id)
+
+        # 1) Account-V1 (cluster régional) : Riot ID -> PUUID.
+        account = self._riot.account.by_riot_id(self.region, game_name, tag_line)
+        puuid = account["puuid"]
+
+        # 2) Summoner-V4 (plateforme) : niveau et icône.
+        summoner = self._lol.summoner.by_puuid(self.platform, puuid)
+
+        # 3) League-V4 (plateforme) : rang de la file classée solo.
+        rank = self._extract_solo_rank(self._lol.league.by_puuid(self.platform, puuid))
+
+        return PlayerRank(
+            game_name=account.get("gameName", game_name),
+            tag_line=account.get("tagLine", tag_line),
+            level=int(summoner["summonerLevel"]),
+            profile_icon_id=int(summoner.get("profileIconId", 0)),
+            ddragon_version=self._latest_ddragon_version(),
+            rank=rank,
         )
 
     def _latest_ddragon_version(self) -> str:
@@ -261,6 +332,7 @@ class RiotClient:
 __all__ = [
     "ApiError",
     "PLATFORM_TO_REGION",
+    "PlayerRank",
     "PlayerSummary",
     "QUEUE_NAMES",
     "RankInfo",

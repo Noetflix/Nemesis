@@ -9,8 +9,17 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
+from nemesis import trashtalk
 from nemesis.config import Config, load_config
-from nemesis.riot import ApiError, PlayerSummary, RecentGame, RiotClient, RiotIdError
+from nemesis.riot import (
+    ApiError,
+    PlayerRank,
+    PlayerSummary,
+    RankInfo,
+    RecentGame,
+    RiotClient,
+    RiotIdError,
+)
 
 logger = logging.getLogger("nemesis")
 
@@ -45,6 +54,18 @@ RANK_EMOJIS: dict[str, str] = {
     "GRANDMASTER": "🔥",
     "CHALLENGER": "👑",
 }
+
+# Roster de la team suivi par la commande !classement.
+TEAM_ROSTER: list[str] = [
+    "OT Noetflix#T1WIN",
+    "OT Néons#KCORP",
+    "OT BaGeR#BGR",
+    "Rat Yote#5234",
+    "CAP#7459",
+]
+
+# Médailles pour les trois premières places du classement.
+_MEDALS: dict[int, str] = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
 def _explain_api_error(error: ApiError) -> str:
@@ -148,6 +169,59 @@ async def _reply_embed(ctx: commands.Context, embed: discord.Embed) -> None:
         await ctx.reply(embed=embed)
 
 
+def _rang_court(rank: RankInfo) -> str:
+    """Rang en texte brut (sans emoji), pour décrire le joueur à Claude."""
+    if not rank.is_ranked:
+        return "Non classé"
+    division = f" {rank.division}" if rank.division else ""
+    winrate = f", {rank.winrate:.0f}% WR" if rank.winrate is not None else ""
+    return f"{rank.tier.capitalize()}{division} ({rank.league_points} LP{winrate})"
+
+
+def _format_leaderboard_entry(position: int, player: PlayerRank, vanne: str) -> str:
+    """Formate une entrée du classement : médaille, rang, winrate et vanne."""
+    medal = _MEDALS.get(position, f"`#{position}`")
+    rank = player.rank
+    if rank.is_ranked:
+        emoji = RANK_EMOJIS.get(rank.tier.upper(), "🎖️")
+        division = f" {rank.division}" if rank.division else ""
+        winrate = f" · ⚔️ {rank.winrate:.0f}%" if rank.winrate is not None else ""
+        rank_txt = (
+            f"{emoji} **{rank.tier.capitalize()}{division}** · {rank.league_points} LP{winrate}"
+        )
+    else:
+        rank_txt = "🎖️ *Non classé*"
+    return f"{medal} **{player.game_name}** `#{player.tag_line}`\n{rank_txt}\n> *{vanne}*"
+
+
+def _build_leaderboard_embed(
+    players: list[PlayerRank], erreurs: list[tuple[str, str]], vannes: list[str]
+) -> discord.Embed:
+    """Construit l'embed du classement (joueurs triés par rang décroissant)."""
+    embed = discord.Embed(title="🏆 Classement Solo/Duo de la team", color=discord.Color.gold())
+    embed.set_author(name="Némésis · Classement", icon_url=_LOGO_ATTACHMENT)
+
+    # Miniature = icône du leader, pour couronner le premier visuellement.
+    leader = players[0]
+    if leader.profile_icon_id:
+        embed.set_thumbnail(url=leader.profile_icon_url)
+
+    lignes = [
+        _format_leaderboard_entry(position, player, vanne)
+        for position, (player, vanne) in enumerate(zip(players, vannes), start=1)
+    ]
+    embed.description = "\n\n".join(lignes)
+
+    # Joueurs non récupérés (Riot ID introuvable, etc.) listés à part.
+    if erreurs:
+        introuvables = "\n".join(f"• `{riot_id}`" for riot_id, _ in erreurs)
+        embed.add_field(name="👻 Fantômes (introuvables)", value=introuvables, inline=False)
+
+    embed.set_footer(text="Némésis • Classement mis à jour", icon_url=_LOGO_ATTACHMENT)
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
 def create_bot(config: Config) -> commands.Bot:
     """Construit le bot, ses intents et enregistre les commandes."""
     # Intents : le contenu des messages est requis pour lire les commandes texte.
@@ -178,6 +252,53 @@ def create_bot(config: Config) -> commands.Bot:
                 return
 
         await _reply_embed(ctx, _build_stats_embed(summary))
+
+    @bot.command(name="classement")
+    async def classement(ctx: commands.Context) -> None:
+        """Affiche le classement Solo/Duo de la team : !classement."""
+        # Un joueur introuvable ne doit pas faire échouer tout le classement :
+        # on collecte les succès et les erreurs séparément.
+        async with ctx.typing():
+            joueurs: list[PlayerRank] = []
+            erreurs: list[tuple[str, str]] = []
+            for riot_id in TEAM_ROSTER:
+                try:
+                    joueurs.append(riot.get_rank(riot_id))
+                except RiotIdError as exc:
+                    erreurs.append((riot_id, str(exc)))
+                except ApiError as exc:
+                    erreurs.append((riot_id, _explain_api_error(exc)))
+
+            # Aucun joueur récupéré : on affiche l'erreur (souvent clé 403 expirée).
+            if not joueurs:
+                detail = "\n".join(f"• `{riot_id}` — {err}" for riot_id, err in erreurs)
+                await _reply_embed(
+                    ctx, _error_embed(f"Impossible de récupérer le classement.\n{detail}")
+                )
+                return
+
+            # Tri par rang décroissant : le meilleur en tête.
+            joueurs.sort(key=lambda player: player.rank.score, reverse=True)
+
+            # Vannes générées par Claude (ou repli local), une par joueur dans l'ordre.
+            lignes = [
+                trashtalk.LigneClassement(
+                    position=position,
+                    total=len(joueurs),
+                    nom=joueur.game_name,
+                    rang=_rang_court(joueur.rank),
+                    is_ranked=joueur.rank.is_ranked,
+                )
+                for position, joueur in enumerate(joueurs, start=1)
+            ]
+            vannes = await trashtalk.generer_vannes(
+                lignes,
+                api_key=config.llm_api_key,
+                base_url=config.llm_base_url,
+                model=config.llm_model,
+            )
+
+        await _reply_embed(ctx, _build_leaderboard_embed(joueurs, erreurs, vannes))
 
     return bot
 
