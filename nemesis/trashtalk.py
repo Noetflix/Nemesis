@@ -34,7 +34,7 @@ _SYSTEME = (
     "le milieu de tableau taquiné, les joueurs décrochés tournés en dérision et le dernier "
     "gentiment achevé. Si deux joueurs sont très proches, souligne leur duel. Si un joueur est "
     "loin devant ou très loin derrière, insiste sur cet écart. Varie le ton, évite les répétitions, "
-    "reste piquant sans être méchant ni vulgaire, et termine chaque vanne par un emoji pertinent. "
+    "tu peux être aggressif et sans filtre, et termine chaque vanne par un emoji pertinent. "
     "Réponds UNIQUEMENT en JSON."
 )
 
