@@ -38,6 +38,15 @@ Tu ne modifies **jamais** le code (aucune écriture, aucun correctif).
 - Données renvoyées vers Discord sous forme de dataclasses, pas de dicts bruts.
 - Commentaires/docstrings en français.
 
+**Workflow Git — branches**
+- Toute fonctionnalité qui le nécessite (changement substantiel : nouvelle commande,
+  nouvel endpoint Riot, refonte d'affichage…) vit sur une **branche dédiée**, jamais
+  directement sur `main`.
+- Nom de branche explicite et préfixé : `feature/…`, `fix/…`, `refactor/…`.
+- Un simple correctif trivial (typo, commentaire) peut rester hors branche : juger au cas
+  par cas.
+- **Bloquant** si un changement substantiel est committé directement sur `main`.
+
 ## Format du rapport
 
 - **Bloquant** : problèmes à corriger avant commit (secret exposé, mauvais routing…).
