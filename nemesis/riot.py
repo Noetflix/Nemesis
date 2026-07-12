@@ -49,6 +49,18 @@ QUEUE_NAMES: dict[int, str] = {
     1710: "Arena",
 }
 
+# Files classées susceptibles de déclencher une notification de fin de partie.
+RANKED_QUEUES: frozenset[int] = frozenset({420, 440})
+
+# Nom lisible du rôle (teamPosition renvoyé par Match-V5).
+ROLE_NAMES: dict[str, str] = {
+    "TOP": "Top",
+    "JUNGLE": "Jungle",
+    "MIDDLE": "Mid",
+    "BOTTOM": "ADC",
+    "UTILITY": "Support",
+}
+
 # Version Data Dragon de secours si l'appel réseau échoue (images non critiques).
 _DDRAGON_FALLBACK_VERSION = "15.13.1"
 
@@ -109,6 +121,19 @@ class RankInfo:
         # Palier dominant, puis division, puis LP : aucun chevauchement possible.
         return tier * 100_000 + division * 1_000 + self.league_points
 
+    @property
+    def ladder_points(self) -> int:
+        """LP cumulés sur toute l'échelle (100 LP par division, 400 par palier).
+
+        Permet de calculer un gain/perte de LP même à travers une montée ou une chute
+        de division/palier. Non classé = 0.
+        """
+        if not self.is_ranked:
+            return 0
+        tier = _TIER_ORDER.get(self.tier.upper(), 0)
+        division = _DIVISION_ORDER.get(self.division.upper(), 0)
+        return tier * 400 + division * 100 + self.league_points
+
 
 @dataclass(frozen=True)
 class RecentGame:
@@ -138,6 +163,85 @@ class RecentGame:
         """Sbires par minute (indicateur de farm)."""
         minutes = self.duration_s / 60
         return self.cs / minutes if minutes else 0.0
+
+
+@dataclass(frozen=True)
+class MatchDetail:
+    """Statistiques détaillées d'une partie terminée (notification de fin de game)."""
+
+    match_id: str
+    game_name: str
+    tag_line: str
+    champion: str
+    champ_level: int
+    kills: int
+    deaths: int
+    assists: int
+    win: bool
+    queue_id: int
+    duration_s: int
+    cs: int
+    gold: int
+    damage_champions: int
+    damage_taken: int
+    vision_score: int
+    wards_placed: int
+    largest_multi_kill: int
+    double_kills: int
+    triple_kills: int
+    quadra_kills: int
+    penta_kills: int
+    team_position: str
+    kill_participation: float | None  # 0.0–1.0, ou None si l'API ne le fournit pas.
+    ddragon_version: str
+
+    @property
+    def kda_ratio(self) -> float:
+        """Ratio (K + A) / D ; une mort minimum pour éviter la division par zéro."""
+        return (self.kills + self.assists) / max(self.deaths, 1)
+
+    @property
+    def queue_name(self) -> str:
+        """Nom lisible de la file de jeu."""
+        return QUEUE_NAMES.get(self.queue_id, "Partie personnalisée")
+
+    @property
+    def role_name(self) -> str:
+        """Rôle lisible (Top, Jungle, Mid, ADC, Support), vide si inconnu."""
+        return ROLE_NAMES.get(self.team_position.upper(), "")
+
+    @property
+    def cs_per_min(self) -> float:
+        """Sbires par minute (indicateur de farm)."""
+        minutes = self.duration_s / 60
+        return self.cs / minutes if minutes else 0.0
+
+    @property
+    def gold_per_min(self) -> float:
+        """Or par minute (indicateur d'économie)."""
+        minutes = self.duration_s / 60
+        return self.gold / minutes if minutes else 0.0
+
+    @property
+    def champion_icon_url(self) -> str:
+        """URL Data Dragon de l'icône du champion joué."""
+        return (
+            f"https://ddragon.leagueoflegends.com/cdn/{self.ddragon_version}"
+            f"/img/champion/{self.champion}.png"
+        )
+
+    @property
+    def multikill_label(self) -> str | None:
+        """Plus haut multi-kill notable (Penta > Quadra > Triple > Double), ou None."""
+        if self.penta_kills:
+            return "PENTAKILL"
+        if self.quadra_kills:
+            return "Quadrakill"
+        if self.triple_kills:
+            return "Triplekill"
+        if self.double_kills:
+            return "Doublekill"
+        return None
 
 
 @dataclass(frozen=True)
@@ -267,6 +371,100 @@ class RiotClient:
             rank=rank,
         )
 
+    def resolve_puuid(self, riot_id: str) -> str:
+        """Résout un Riot ID (Pseudo#TAG) en PUUID via Account-V1 (cluster régional)."""
+        game_name, tag_line = parse_riot_id(riot_id)
+        account = self._riot.account.by_riot_id(self.region, game_name, tag_line)
+        return account["puuid"]
+
+    def latest_ranked_match_id(self, puuid: str) -> str | None:
+        """ID de la dernière partie classée (solo ou flex) du joueur, ou None."""
+        ids = self._lol.match.matchlist_by_puuid(self.region, puuid, count=1, type="ranked")
+        return ids[0] if ids else None
+
+    def match_detail(self, match_id: str, puuid: str) -> MatchDetail | None:
+        """Construit le MatchDetail d'une partie pour ce joueur.
+
+        Renvoie None si la partie n'est pas classée (solo/flex) ou si le joueur est absent.
+        """
+        match = self._lol.match.by_id(self.region, match_id)
+        info = match.get("info", {})
+        queue_id = int(info.get("queueId", 0))
+        if queue_id not in RANKED_QUEUES:
+            return None
+        participant = self._find_participant(match, puuid)
+        if participant is None:
+            return None
+
+        challenges = participant.get("challenges") or {}
+        kp = challenges.get("killParticipation")
+        cs = int(participant.get("totalMinionsKilled", 0)) + int(
+            participant.get("neutralMinionsKilled", 0)
+        )
+        return MatchDetail(
+            match_id=match_id,
+            game_name=participant.get("riotIdGameName") or participant.get("summonerName", "?"),
+            tag_line=participant.get("riotIdTagline", ""),
+            champion=participant.get("championName", "?"),
+            champ_level=int(participant.get("champLevel", 0)),
+            kills=int(participant.get("kills", 0)),
+            deaths=int(participant.get("deaths", 0)),
+            assists=int(participant.get("assists", 0)),
+            win=bool(participant.get("win")),
+            queue_id=queue_id,
+            duration_s=int(info.get("gameDuration", 0)),
+            cs=cs,
+            gold=int(participant.get("goldEarned", 0)),
+            damage_champions=int(participant.get("totalDamageDealtToChampions", 0)),
+            damage_taken=int(participant.get("totalDamageTaken", 0)),
+            vision_score=int(participant.get("visionScore", 0)),
+            wards_placed=int(participant.get("wardsPlaced", 0)),
+            largest_multi_kill=int(participant.get("largestMultiKill", 0)),
+            double_kills=int(participant.get("doubleKills", 0)),
+            triple_kills=int(participant.get("tripleKills", 0)),
+            quadra_kills=int(participant.get("quadraKills", 0)),
+            penta_kills=int(participant.get("pentaKills", 0)),
+            team_position=participant.get("teamPosition", ""),
+            kill_participation=float(kp) if kp is not None else None,
+            ddragon_version=self._latest_ddragon_version(),
+        )
+
+    def current_rank_for_queue(self, puuid: str, queue_id: int) -> RankInfo:
+        """Rang actuel du joueur dans la file de la partie (Flex si 440, sinon Solo/Duo)."""
+        queue_type = "RANKED_FLEX_SR" if queue_id == 440 else "RANKED_SOLO_5x5"
+        for entry in self._lol.league.by_puuid(self.platform, puuid):
+            if entry.get("queueType") == queue_type:
+                return self._rank_from_entry(entry)
+        return RankInfo(tier="", division="", league_points=0, wins=0, losses=0)
+
+    def ranks_all_queues(self, puuid: str) -> dict[int, RankInfo]:
+        """Rangs Solo/Duo (420) et Flex (440) en un seul appel League-V4.
+
+        Sert à mémoriser le rang « avant partie » pour calculer le gain/perte de LP.
+        Les files absentes sont renvoyées comme non classées.
+        """
+        rangs: dict[int, RankInfo] = {
+            420: RankInfo(tier="", division="", league_points=0, wins=0, losses=0),
+            440: RankInfo(tier="", division="", league_points=0, wins=0, losses=0),
+        }
+        for entry in self._lol.league.by_puuid(self.platform, puuid):
+            if entry.get("queueType") == "RANKED_SOLO_5x5":
+                rangs[420] = self._rank_from_entry(entry)
+            elif entry.get("queueType") == "RANKED_FLEX_SR":
+                rangs[440] = self._rank_from_entry(entry)
+        return rangs
+
+    @staticmethod
+    def _rank_from_entry(entry: dict) -> RankInfo:
+        """Construit un RankInfo depuis une entrée League-V4."""
+        return RankInfo(
+            tier=entry.get("tier", ""),
+            division=entry.get("rank", ""),
+            league_points=int(entry.get("leaguePoints", 0)),
+            wins=int(entry.get("wins", 0)),
+            losses=int(entry.get("losses", 0)),
+        )
+
     def _latest_ddragon_version(self) -> str:
         """Dernière version Data Dragon (mise en cache) pour construire les URLs d'images."""
         if self._ddragon_version is None:
@@ -332,6 +530,9 @@ class RiotClient:
 __all__ = [
     "ApiError",
     "PLATFORM_TO_REGION",
+    "RANKED_QUEUES",
+    "ROLE_NAMES",
+    "MatchDetail",
     "PlayerRank",
     "PlayerSummary",
     "QUEUE_NAMES",

@@ -228,4 +228,117 @@ def generer(position: int, total: int, is_ranked: bool) -> str:
     )
 
 
-__all__ = ["categorie", "generer"]
+# --- Commentaire d'une partie terminée (notification de fin de game) ---------------------
+
+# Consigne au modèle pour commenter UNE partie qui vient de finir.
+_SYSTEME_PARTIE = (
+    "Tu es Némésis, un bot Discord qui chambre une bande de potes sur League of Legends. "
+    "Une partie classée vient de se terminer pour l'un d'eux. Écris UNE seule phrase (140 "
+    "caractères max), en français, dans un style trash-talk bon enfant entre amis mais qui "
+    "peut piquer. Sur une victoire, glorifie ou charrie selon la performance ; sur une "
+    "défaite, chambre sans pitié (ou console ironiquement si le joueur a bien joué malgré "
+    "la défaite). Appuie-toi sur les stats fournies (KDA, rôle, champion, dégâts, multikills, "
+    "farm) pour viser juste : un gros KDA se célèbre, un feed se moque, un pentakill se "
+    "commente. Termine par un emoji pertinent. Réponds UNIQUEMENT avec la phrase, sans "
+    "guillemets ni préfixe."
+)
+
+# Répliques de secours locales selon victoire/défaite et qualité du KDA.
+_PARTIE_VICTOIRE_CARRY: tuple[str, ...] = (
+    "Victoire méritée, ce soir c'est toi le patron 👑",
+    "GG, t'as porté la game sur ton dos 💪",
+    "Un carry pareil, c'en est presque gênant pour les autres 🔥",
+)
+_PARTIE_VICTOIRE_FLUKE: tuple[str, ...] = (
+    "Victoire… grâce à la team surtout, avoue 😏",
+    "T'as gagné mais on va gentiment oublier ton score 🙈",
+    "W dans les stats, mais la vraie MVP c'était pas toi 🍀",
+)
+_PARTIE_DEFAITE_HONNEUR: tuple[str, ...] = (
+    "Défaite, mais toi t'as tenu la baraque, la team a coulé 🫡",
+    "Perdu malgré un beau match : la loterie du solo Q 🎰",
+    "Bien joué dans la défaite, c'est les autres qu'il faut gronder 😤",
+)
+_PARTIE_DEFAITE_BOULET: tuple[str, ...] = (
+    "Défaite… et à voir ton KDA, on sait un peu à qui la faute 💀",
+    "Perdu, feed inclus. On désinstalle ? (on plaisante… ou pas) 🤡",
+    "Cette game, on va faire comme si elle n'avait jamais existé 🙃",
+)
+
+
+@dataclass(frozen=True)
+class PerfPartie:
+    """Résumé d'une partie, tel que présenté au générateur de commentaire."""
+
+    nom: str
+    champion: str
+    role: str
+    queue: str
+    win: bool
+    kills: int
+    deaths: int
+    assists: int
+    kda: float
+    cs_per_min: float
+    degats: int
+    vision: int
+    multikill: str | None
+
+
+async def generer_vanne_partie(
+    perf: PerfPartie, *, api_key: str | None, base_url: str, model: str
+) -> str:
+    """Renvoie un commentaire de trash-talk pour une partie via l'IA, ou le repli local.
+
+    Ne lève jamais : toute erreur retombe sur le générateur procédural.
+    """
+    if not api_key:
+        return generer_partie(perf.win, perf.kda)
+    try:
+        return await _generer_partie_via_llm(perf, api_key, base_url, model)
+    except Exception:  # noqa: BLE001 — l'IA est un bonus, jamais un point de rupture.
+        logger.warning("Commentaire IA indisponible, repli sur le générateur local.", exc_info=True)
+        return generer_partie(perf.win, perf.kda)
+
+
+async def _generer_partie_via_llm(perf: PerfPartie, api_key: str, base_url: str, model: str) -> str:
+    """Un appel (API compatible OpenAI) renvoie le commentaire de la partie."""
+    issue = "VICTOIRE" if perf.win else "DÉFAITE"
+    role = f" ({perf.role})" if perf.role else ""
+    multi = f", {perf.multikill}" if perf.multikill else ""
+    message = (
+        f"{perf.nom} vient de finir une {perf.queue} en {issue}.\n"
+        f"Champion : {perf.champion}{role}. "
+        f"KDA : {perf.kills}/{perf.deaths}/{perf.assists} (ratio {perf.kda:.1f}){multi}. "
+        f"Farm : {perf.cs_per_min:.1f} cs/min. "
+        f"Dégâts aux champions : {perf.degats}. Score de vision : {perf.vision}.\n"
+        "Écris le commentaire."
+    )
+
+    async with AsyncOpenAI(api_key=api_key, base_url=base_url) as client:
+        response = await client.chat.completions.create(
+            model=model,
+            max_tokens=200,
+            temperature=1.0,
+            messages=[
+                {"role": "system", "content": _SYSTEME_PARTIE},
+                {"role": "user", "content": message},
+            ],
+        )
+    texte = (response.choices[0].message.content or "").strip()
+    if not texte:
+        raise ValueError("Commentaire vide renvoyé par le modèle.")
+    return texte
+
+
+def generer_partie(win: bool, kda: float) -> str:
+    """Commentaire de secours local selon l'issue et la qualité du KDA (seuil 2.5)."""
+    bien_joue = kda >= 2.5
+    if win:
+        pool = _PARTIE_VICTOIRE_CARRY if bien_joue else _PARTIE_VICTOIRE_FLUKE
+    else:
+        pool = _PARTIE_DEFAITE_HONNEUR if bien_joue else _PARTIE_DEFAITE_BOULET
+    return random.choice(pool)
+
+
+__all__ = ["PerfPartie", "categorie", "generer", "generer_partie", "generer_vanne_partie"]
