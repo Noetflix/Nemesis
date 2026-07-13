@@ -644,7 +644,8 @@ def _build_help_embed(prefix: str) -> discord.Embed:
         value=(
             "• 🏆 **Classement** posté chaque jour à 10h et 20h\n"
             "• 📊 **Notif de fin de partie** classée (stats + vanne + LP + GIF)\n"
-            "• ⚔️ **Alerte « en game »** quand un membre lance une classée"
+            "• ⚔️ **Alerte « en game »** quand un membre lance une classée\n"
+            "• 🎲 **Pari** 👍/👎 sur l'issue de la partie (fermé après 5 min)"
         ),
         inline=False,
     )
