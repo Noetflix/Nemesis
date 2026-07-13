@@ -15,6 +15,9 @@ from nemesis import gifs, trashtalk
 from nemesis.config import Config, load_config
 from nemesis.riot import (
     ApiError,
+    ChampionMastery,
+    LiveGame,
+    MasterySummary,
     MatchDetail,
     PlayerRank,
     PlayerSummary,
@@ -488,6 +491,168 @@ async def _preparer_notif_partie(
     return await _finaliser_notif(config, riot_id, detail, rank, None)
 
 
+def _temps_relatif(epoch_ms: int) -> str:
+    """Convertit une date epoch (ms) en durée relative approximative en français."""
+    if not epoch_ms:
+        return "jamais"
+    quand = datetime.datetime.fromtimestamp(epoch_ms / 1000, datetime.timezone.utc)
+    jours = (datetime.datetime.now(datetime.timezone.utc) - quand).days
+    if jours <= 0:
+        return "aujourd'hui"
+    if jours == 1:
+        return "hier"
+    if jours < 30:
+        return f"il y a {jours} j"
+    if jours < 365:
+        return f"il y a {jours // 30} mois"
+    return f"il y a {jours // 365} an(s)"
+
+
+def _format_maitrise(position: int, mastery: ChampionMastery) -> str:
+    """Formate une entrée de maîtrise : médaille, champion, niveau, points, récence."""
+    medal = _MEDALS.get(position, f"`#{position}`")
+    return (
+        f"{medal} **{mastery.champion}** · Niveau {mastery.level}\n"
+        f"`{_format_nombre(mastery.points)} pts` · joué {_temps_relatif(mastery.last_play_ms)}"
+    )
+
+
+def _build_mastery_embed(summary: MasterySummary) -> discord.Embed:
+    """Construit l'embed des champions les plus maîtrisés (commande !maitrise)."""
+    embed = discord.Embed(
+        title=f"{summary.game_name} #{summary.tag_line}", color=discord.Color.purple()
+    )
+    embed.set_author(name="Némésis · Maîtrises de champions", icon_url=_LOGO_ATTACHMENT)
+    if summary.masteries:
+        embed.set_thumbnail(url=summary.masteries[0].champion_icon_url)
+        embed.description = "\n\n".join(
+            _format_maitrise(position, mastery)
+            for position, mastery in enumerate(summary.masteries, start=1)
+        )
+    else:
+        if summary.profile_icon_id:
+            embed.set_thumbnail(url=summary.profile_icon_url)
+        embed.description = "*Aucune maîtrise de champion trouvée.*"
+    embed.set_footer(text="Némésis · Données Riot Games", icon_url=_LOGO_ATTACHMENT)
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def _versus_colonne(player: PlayerRank) -> str:
+    """Colonne récapitulative d'un joueur pour l'embed !versus."""
+    rank = player.rank
+    if not rank.is_ranked:
+        return "🎖️ *Non classé*"
+    emoji = RANK_EMOJIS.get(rank.tier.upper(), "🎖️")
+    division = f" {rank.division}" if rank.division else ""
+    winrate = f"{rank.winrate:.0f}% WR" if rank.winrate is not None else "—"
+    return (
+        f"{emoji} **{rank.tier.capitalize()}{division}**\n"
+        f"{rank.league_points} LP · {winrate}\n{rank.wins}V / {rank.losses}D"
+    )
+
+
+def _build_versus_embed(a: PlayerRank, b: PlayerRank, vanne: str) -> discord.Embed:
+    """Construit l'embed de face-à-face entre deux joueurs (commande !versus)."""
+    a_devant = a.rank.score >= b.rank.score
+    embed = discord.Embed(title="⚔️ Face-à-face", color=discord.Color.gold())
+    embed.set_author(name="Némésis · Versus", icon_url=_LOGO_ATTACHMENT)
+
+    leader = a if a_devant else b
+    if leader.profile_icon_id:
+        embed.set_thumbnail(url=leader.profile_icon_url)
+
+    couronne_a = " 👑" if a_devant else ""
+    couronne_b = "" if a_devant else " 👑"
+    embed.add_field(
+        name=f"{a.game_name} #{a.tag_line}{couronne_a}", value=_versus_colonne(a), inline=True
+    )
+    embed.add_field(
+        name=f"{b.game_name} #{b.tag_line}{couronne_b}", value=_versus_colonne(b), inline=True
+    )
+    embed.add_field(name="🗣️ Verdict", value=f"> *{vanne}*", inline=False)
+    embed.set_footer(text="Némésis", icon_url=_LOGO_ATTACHMENT)
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def _split_versus(texte: str) -> tuple[str, str] | None:
+    """Découpe « A#TAG | B#TAG » (ou « A vs B ») en deux Riot IDs, ou None si séparateur absent."""
+    for sep in ("|", " vs ", " VS "):
+        if sep in texte:
+            gauche, _, droite = texte.partition(sep)
+            gauche, droite = gauche.strip(), droite.strip()
+            if gauche and droite:
+                return gauche, droite
+    return None
+
+
+def _build_live_embed(nom: str, jeu: LiveGame, vanne: str) -> discord.Embed:
+    """Construit l'embed d'alerte « en game » (Spectator)."""
+    embed = discord.Embed(
+        title=f"⚔️ {nom} est en partie !", description=f"> *{vanne}*", color=discord.Color.blue()
+    )
+    embed.set_author(name="Némésis · En game", icon_url=_LOGO_ATTACHMENT)
+    embed.set_thumbnail(url=jeu.champion_icon_url)
+    embed.add_field(name="🎮 Champion", value=f"**{jeu.champion}**", inline=True)
+    embed.add_field(name="🏆 File", value=jeu.queue_name, inline=True)
+    embed.set_footer(text="Némésis · bonne chance 🍀", icon_url=_LOGO_ATTACHMENT)
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+# Catalogue central des commandes, affiché par la commande !help.
+# ⚠️ À METTRE À JOUR à chaque ajout de commande (voir le skill add-command) :
+# ajoute un tuple (usage sans préfixe, description) ici.
+AIDE_COMMANDES: list[tuple[str, str]] = [
+    (
+        "stats Pseudo#TAG",
+        "Statistiques détaillées d'un joueur : niveau, rang, winrate et 5 dernières parties.",
+    ),
+    (
+        "classement",
+        "Classement Solo/Duo de la team, du meilleur au pire, avec une vanne par joueur.",
+    ),
+    (
+        "derniere Pseudo#TAG",
+        "Fiche complète de la dernière partie classée : stats, commentaire et GIF.",
+    ),
+    (
+        "maitrise Pseudo#TAG",
+        "Champions les plus maîtrisés : niveau de maîtrise, points et dernière fois joués.",
+    ),
+    (
+        "versus A#TAG | B#TAG",
+        "Face-à-face entre deux joueurs : rang, winrate, W/L et verdict chambré.",
+    ),
+    ("help", "Affiche ce panneau d'aide."),
+]
+
+
+def _build_help_embed(prefix: str) -> discord.Embed:
+    """Construit l'embed d'aide listant toutes les commandes (commande !help)."""
+    embed = discord.Embed(
+        title="📖 Aide — Commandes Némésis",
+        description="Bot de stats **League of Legends**. Le *Riot ID* s'écrit `Pseudo#TAG`.",
+        color=discord.Color.blurple(),
+    )
+    embed.set_author(name="Némésis", icon_url=_LOGO_ATTACHMENT)
+    for usage, description in AIDE_COMMANDES:
+        embed.add_field(name=f"`{prefix}{usage}`", value=description, inline=False)
+    embed.add_field(
+        name="✨ En automatique (sans commande)",
+        value=(
+            "• 🏆 **Classement** posté chaque jour à 10h et 20h\n"
+            "• 📊 **Notif de fin de partie** classée (stats + vanne + LP + GIF)\n"
+            "• ⚔️ **Alerte « en game »** quand un membre lance une classée"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Némésis · Données Riot Games", icon_url=_LOGO_ATTACHMENT)
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
 def create_bot(config: Config) -> commands.Bot:
     """Construit le bot, ses intents et enregistre les commandes."""
     # Intents : le contenu des messages est requis pour lire les commandes texte.
@@ -496,7 +661,8 @@ def create_bot(config: Config) -> commands.Bot:
     intents = discord.Intents.default()
     intents.message_content = True
 
-    bot = commands.Bot(command_prefix=config.command_prefix, intents=intents)
+    # help_command=None : on remplace l'aide texte par défaut par notre embed !help.
+    bot = commands.Bot(command_prefix=config.command_prefix, intents=intents, help_command=None)
     riot = RiotClient(config.riot_api_key, platform=config.default_platform)
 
     @bot.command(name="stats")
@@ -547,6 +713,66 @@ def create_bot(config: Config) -> commands.Bot:
             return
         await _reply_embed(ctx, *embeds)
 
+    @bot.command(name="maitrise")
+    async def maitrise(ctx: commands.Context, *, riot_id: str) -> None:
+        """Affiche les champions les plus maîtrisés d'un joueur : !maitrise Pseudo#TAG."""
+        async with ctx.typing():
+            try:
+                summary = riot.get_champion_masteries(riot_id)
+            except RiotIdError as exc:
+                await _reply_embed(ctx, _error_embed(str(exc)))
+                return
+            except ApiError as exc:
+                await _reply_embed(ctx, _error_embed(_explain_api_error(exc)))
+                return
+        await _reply_embed(ctx, _build_mastery_embed(summary))
+
+    @bot.command(name="versus")
+    async def versus(ctx: commands.Context, *, args: str) -> None:
+        """Compare deux joueurs : !versus Pseudo1#TAG | Pseudo2#TAG."""
+        paire = _split_versus(args)
+        if paire is None:
+            await _reply_embed(
+                ctx, _error_embed("Format attendu : `!versus Pseudo1#TAG | Pseudo2#TAG`")
+            )
+            return
+
+        id_a, id_b = paire
+        async with ctx.typing():
+            try:
+                joueur_a = riot.get_rank(id_a)
+                joueur_b = riot.get_rank(id_b)
+            except RiotIdError as exc:
+                await _reply_embed(ctx, _error_embed(str(exc)))
+                return
+            except ApiError as exc:
+                await _reply_embed(ctx, _error_embed(_explain_api_error(exc)))
+                return
+
+            # Le mieux classé mène ; écart serré si moins de 100 LP cumulés d'écart.
+            gagnant, perdant = (
+                (joueur_a, joueur_b)
+                if joueur_a.rank.score >= joueur_b.rank.score
+                else (joueur_b, joueur_a)
+            )
+            ecart_serre = abs(joueur_a.rank.ladder_points - joueur_b.rank.ladder_points) <= 100
+            vanne = await trashtalk.generer_vanne_duel(
+                gagnant.game_name,
+                _rang_court(gagnant.rank),
+                perdant.game_name,
+                _rang_court(perdant.rank),
+                ecart_serre=ecart_serre,
+                api_key=config.llm_api_key,
+                base_url=config.llm_base_url,
+                model=config.llm_model,
+            )
+        await _reply_embed(ctx, _build_versus_embed(joueur_a, joueur_b, vanne))
+
+    @bot.command(name="help", aliases=["aide", "commandes"])
+    async def aide(ctx: commands.Context) -> None:
+        """Affiche la liste des commandes disponibles : !help."""
+        await _reply_embed(ctx, _build_help_embed(config.command_prefix))
+
     # Planification : poste le classement dans un salon aux heures configurées.
     heures = _parse_heures(config.classement_heures, config.classement_tz)
 
@@ -570,11 +796,13 @@ def create_bot(config: Config) -> commands.Bot:
     # - puuids : cache Riot ID -> PUUID (résolu une fois).
     # - dernier_match : Riot ID -> ID de la dernière partie classée connue.
     # - rank_avant : « Riot ID:queue » -> rang avant la partie, pour le gain/perte de LP.
+    # - en_game : Riot ID -> ID de la partie en cours déjà annoncée (anti-doublon).
     # - amorces : joueurs pour qui une base de référence a été enregistrée (anti-spam
     #   au démarrage : on ne notifie que les parties postérieures à l'amorçage).
     puuids: dict[str, str] = {}
     dernier_match: dict[str, str | None] = {}
     rank_avant: dict[str, RankInfo] = {}
+    en_game: dict[str, str] = {}
     amorces: set[str] = set()
     match_channel = config.match_channel_effectif
 
@@ -611,6 +839,24 @@ def create_bot(config: Config) -> commands.Bot:
         await _post_embed(salon, *embeds)
         logger.info("Partie annoncée pour %s (match %s).", riot_id, match_id)
 
+    def _partie_en_cours(puuid: str) -> LiveGame | None:
+        """Partie en cours du joueur, ou None (erreurs API dégradées silencieusement)."""
+        try:
+            return riot.active_game(puuid)
+        except ApiError as exc:
+            logger.warning("Spectator en échec (puuid=%s) : %s", puuid[:8], exc)
+            return None
+
+    async def _alerter_en_game(riot_id: str, jeu: LiveGame) -> None:
+        """Poste l'alerte « en game » dans le salon dédié."""
+        salon = bot.get_channel(match_channel)
+        if salon is None:
+            return
+        nom = riot_id.split("#", 1)[0]
+        vanne = trashtalk.generer_vanne_en_game(nom, jeu.champion)
+        await _post_embed(salon, _build_live_embed(nom, jeu, vanne))
+        logger.info("Alerte en game pour %s (%s).", nom, jeu.champion)
+
     @tasks.loop(minutes=config.match_poll_minutes)
     async def surveillance_parties() -> None:
         for riot_id in TEAM_ROSTER:
@@ -622,8 +868,9 @@ def create_bot(config: Config) -> commands.Bot:
             except ApiError as exc:
                 logger.warning("Match-V5 en échec pour %s : %s", riot_id, exc)
                 continue
+            jeu = _partie_en_cours(puuid)
 
-            # Premier passage : on mémorise (match + rangs) sans notifier (anti-spam).
+            # Premier passage : on mémorise (match + rangs + partie en cours) sans notifier.
             if riot_id not in amorces:
                 dernier_match[riot_id] = match_id
                 try:
@@ -631,8 +878,17 @@ def create_bot(config: Config) -> commands.Bot:
                         rank_avant[f"{riot_id}:{qid}"] = rang
                 except ApiError as exc:
                     logger.warning("Rangs initiaux indisponibles pour %s : %s", riot_id, exc)
+                if jeu and jeu.is_ranked:
+                    en_game[riot_id] = jeu.game_id
                 amorces.add(riot_id)
                 continue
+
+            # Alerte « en game » : une seule fois par partie classée.
+            if jeu is None:
+                en_game.pop(riot_id, None)
+            elif jeu.is_ranked and en_game.get(riot_id) != jeu.game_id:
+                en_game[riot_id] = jeu.game_id
+                await _alerter_en_game(riot_id, jeu)
 
             if match_id and match_id != dernier_match.get(riot_id):
                 dernier_match[riot_id] = match_id

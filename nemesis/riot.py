@@ -290,6 +290,73 @@ class PlayerRank:
         )
 
 
+@dataclass(frozen=True)
+class ChampionMastery:
+    """Maîtrise d'un champion pour un joueur (commande !maitrise)."""
+
+    champion: str
+    level: int
+    points: int
+    last_play_ms: int  # date de dernière partie (epoch en millisecondes).
+    ddragon_version: str
+
+    @property
+    def champion_icon_url(self) -> str:
+        """URL Data Dragon de l'icône du champion."""
+        return (
+            f"https://ddragon.leagueoflegends.com/cdn/{self.ddragon_version}"
+            f"/img/champion/{self.champion}.png"
+        )
+
+
+@dataclass(frozen=True)
+class MasterySummary:
+    """Identité d'un joueur + ses champions les plus maîtrisés."""
+
+    game_name: str
+    tag_line: str
+    profile_icon_id: int
+    ddragon_version: str
+    masteries: list[ChampionMastery]
+
+    @property
+    def profile_icon_url(self) -> str:
+        """URL Data Dragon de l'icône d'invocateur."""
+        return (
+            f"https://ddragon.leagueoflegends.com/cdn/{self.ddragon_version}"
+            f"/img/profileicon/{self.profile_icon_id}.png"
+        )
+
+
+@dataclass(frozen=True)
+class LiveGame:
+    """Partie en cours d'un joueur (alerte « en game », Spectator-V5)."""
+
+    game_id: str
+    queue_id: int
+    champion: str
+    ddragon_version: str
+    start_ms: int
+
+    @property
+    def is_ranked(self) -> bool:
+        """Vrai si la partie est une file classée (solo/duo ou flex)."""
+        return self.queue_id in RANKED_QUEUES
+
+    @property
+    def queue_name(self) -> str:
+        """Nom lisible de la file de jeu."""
+        return QUEUE_NAMES.get(self.queue_id, "Partie personnalisée")
+
+    @property
+    def champion_icon_url(self) -> str:
+        """URL Data Dragon de l'icône du champion joué."""
+        return (
+            f"https://ddragon.leagueoflegends.com/cdn/{self.ddragon_version}"
+            f"/img/champion/{self.champion}.png"
+        )
+
+
 def parse_riot_id(riot_id: str) -> tuple[str, str]:
     """Découpe « Pseudo#TAG » en (game_name, tag_line).
 
@@ -315,6 +382,8 @@ class RiotClient:
         self._riot = RiotWatcher(api_key)
         # Version Data Dragon mise en cache après le premier appel.
         self._ddragon_version: str | None = None
+        # Correspondance championId (numérique) -> nom, mise en cache.
+        self._champion_names: dict[int, str] | None = None
 
     def get_player_summary(self, riot_id: str) -> PlayerSummary:
         """Agrège niveau, rang, winrate et dernières parties d'un Riot ID."""
@@ -465,6 +534,75 @@ class RiotClient:
             losses=int(entry.get("losses", 0)),
         )
 
+    def get_champion_masteries(self, riot_id: str, count: int = 5) -> MasterySummary:
+        """Champions les plus maîtrisés d'un joueur (Champion-Mastery-V4, plateforme)."""
+        game_name, tag_line = parse_riot_id(riot_id)
+
+        # 1) Account-V1 (cluster régional) : Riot ID -> PUUID.
+        account = self._riot.account.by_riot_id(self.region, game_name, tag_line)
+        puuid = account["puuid"]
+
+        # 2) Summoner-V4 (plateforme) : icône d'invocateur.
+        summoner = self._lol.summoner.by_puuid(self.platform, puuid)
+
+        # 3) Champion-Mastery-V4 (plateforme) : top champions par points de maîtrise.
+        entries = self._lol.champion_mastery.top_by_puuid(self.platform, puuid, count=count)
+        noms = self._noms_champions()
+        version = self._latest_ddragon_version()
+        masteries = [
+            ChampionMastery(
+                champion=noms.get(int(entry.get("championId", 0)), "?"),
+                level=int(entry.get("championLevel", 0)),
+                points=int(entry.get("championPoints", 0)),
+                last_play_ms=int(entry.get("lastPlayTime", 0)),
+                ddragon_version=version,
+            )
+            for entry in entries
+        ]
+        return MasterySummary(
+            game_name=account.get("gameName", game_name),
+            tag_line=account.get("tagLine", tag_line),
+            profile_icon_id=int(summoner.get("profileIconId", 0)),
+            ddragon_version=version,
+            masteries=masteries,
+        )
+
+    def active_game(self, puuid: str) -> LiveGame | None:
+        """Partie en cours du joueur (Spectator-V5, plateforme), ou None s'il n'est pas en jeu.
+
+        Un 404 signifie « pas en partie » ; les autres erreurs API sont propagées.
+        """
+        try:
+            game = self._lol.spectator.by_summoner(self.platform, puuid)
+        except ApiError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
+        participant = next(
+            (p for p in game.get("participants", []) if p.get("puuid") == puuid), None
+        )
+        champion = "?"
+        if participant is not None:
+            champion = self._noms_champions().get(int(participant.get("championId", 0)), "?")
+        return LiveGame(
+            game_id=str(game.get("gameId", "")),
+            queue_id=int(game.get("gameQueueConfigId", 0)),
+            champion=champion,
+            ddragon_version=self._latest_ddragon_version(),
+            start_ms=int(game.get("gameStartTime", 0)),
+        )
+
+    def _noms_champions(self) -> dict[int, str]:
+        """Correspondance championId -> nom (via Data Dragon), mise en cache."""
+        if self._champion_names is None:
+            try:
+                data = self._lol.data_dragon.champions(self._latest_ddragon_version())["data"]
+                self._champion_names = {int(champ["key"]): champ["id"] for champ in data.values()}
+            except Exception:  # noqa: BLE001 — sans la table, on affiche « ? » plutôt que crasher.
+                self._champion_names = {}
+        return self._champion_names
+
     def _latest_ddragon_version(self) -> str:
         """Dernière version Data Dragon (mise en cache) pour construire les URLs d'images."""
         if self._ddragon_version is None:
@@ -532,6 +670,9 @@ __all__ = [
     "PLATFORM_TO_REGION",
     "RANKED_QUEUES",
     "ROLE_NAMES",
+    "ChampionMastery",
+    "LiveGame",
+    "MasterySummary",
     "MatchDetail",
     "PlayerRank",
     "PlayerSummary",
