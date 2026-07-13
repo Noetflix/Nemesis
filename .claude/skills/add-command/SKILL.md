@@ -38,7 +38,12 @@ ajoute d'abord la méthode dans `riot.py` (voir le skill `add-riot-endpoint`).
 4. **Réponds avec un `discord.Embed`** (titre + `add_field`), jamais un simple texte pour
    des stats. Modèle : la commande `stats`.
 
-5. **Vérifie** avec le skill `check` avant de committer.
+5. **Documente la commande dans l'aide** : ajoute un tuple `(usage, description)` à la liste
+   `AIDE_COMMANDES` en haut de `bot.py`. C'est ce catalogue qu'affiche la commande `!help` ;
+   toute commande omise y sera invisible pour les utilisateurs. Garde une description courte
+   en français, avec l'usage sans le préfixe (ex. `"maitrise Pseudo#TAG"`).
+
+6. **Vérifie** avec le skill `check` avant de committer.
 
 ## Points de vigilance
 

@@ -341,4 +341,96 @@ def generer_partie(win: bool, kda: float) -> str:
     return random.choice(pool)
 
 
-__all__ = ["PerfPartie", "categorie", "generer", "generer_partie", "generer_vanne_partie"]
+# --- Commentaire d'un duel (commande !versus) --------------------------------------------
+
+_SYSTEME_DUEL = (
+    "Tu es Némésis, un bot Discord qui chambre une bande de potes sur League of Legends. "
+    "On te donne un face-à-face entre deux joueurs. Écris UNE phrase (140 caractères max), "
+    "en français, style trash-talk bon enfant mais qui pique : glorifie ou charrie celui qui "
+    "mène, chambre celui qui est derrière, et souligne l'écart (serré ou humiliant). Termine "
+    "par un emoji. Réponds UNIQUEMENT avec la phrase, sans guillemets ni préfixe."
+)
+
+_DUEL_ECRASANT: tuple[str, ...] = (
+    "{gagnant} roule sur {perdant}, ce n'est même plus un duel c'est une leçon 📚",
+    "{perdant} ramasse les miettes pendant que {gagnant} banquette au sommet 🍗",
+    "{gagnant} vs {perdant} : appelez les secours pour {perdant} 🚑",
+)
+_DUEL_SERRE: tuple[str, ...] = (
+    "{gagnant} devance {perdant} d'un cheveu, la revanche va faire mal 🔥",
+    "Duel au couteau : {gagnant} passe devant {perdant}, mais ça se joue à rien ⚔️",
+    "{gagnant} et {perdant} se tiennent, un mauvais LP et tout bascule 😬",
+)
+
+
+async def generer_vanne_duel(
+    gagnant: str,
+    rang_gagnant: str,
+    perdant: str,
+    rang_perdant: str,
+    *,
+    ecart_serre: bool,
+    api_key: str | None,
+    base_url: str,
+    model: str,
+) -> str:
+    """Renvoie un commentaire de duel via l'IA, ou le repli local. Ne lève jamais."""
+    if not api_key:
+        return generer_duel(gagnant, perdant, ecart_serre)
+    try:
+        message = (
+            f"Face-à-face :\n- {gagnant} : {rang_gagnant} (devant)\n"
+            f"- {perdant} : {rang_perdant} (derrière)\n"
+            f"L'écart est {'serré' if ecart_serre else 'important'}. Écris le commentaire."
+        )
+        async with AsyncOpenAI(api_key=api_key, base_url=base_url) as client:
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=200,
+                temperature=1.0,
+                messages=[
+                    {"role": "system", "content": _SYSTEME_DUEL},
+                    {"role": "user", "content": message},
+                ],
+            )
+        texte = (response.choices[0].message.content or "").strip()
+        if not texte:
+            raise ValueError("Commentaire de duel vide.")
+        return texte
+    except Exception:  # noqa: BLE001 — l'IA est un bonus, jamais un point de rupture.
+        logger.warning("Vanne de duel IA indisponible, repli sur le générateur local.")
+        return generer_duel(gagnant, perdant, ecart_serre)
+
+
+def generer_duel(gagnant: str, perdant: str, ecart_serre: bool) -> str:
+    """Commentaire de duel de secours local."""
+    pool = _DUEL_SERRE if ecart_serre else _DUEL_ECRASANT
+    return random.choice(pool).format(gagnant=gagnant, perdant=perdant)
+
+
+# --- Alerte « en game » (commande temps réel) --------------------------------------------
+
+_EN_GAME: tuple[str, ...] = (
+    "{nom} lance une game sur {champion}, priez pour ses coéquipiers 🙏",
+    "🚨 {nom} est en ranked sur {champion}, LP en jeu, sueurs froides garanties 😰",
+    "{nom} sort le {champion}, le serveur retient son souffle 🎮",
+    "Alerte : {nom} tente sa chance sur {champion}. Montée ou tragédie ? 🎲",
+    "{nom} enfourche {champion} pour la gloire (ou la honte) 🏇",
+)
+
+
+def generer_vanne_en_game(nom: str, champion: str) -> str:
+    """Petite accroche locale pour l'alerte « en game »."""
+    return random.choice(_EN_GAME).format(nom=nom, champion=champion)
+
+
+__all__ = [
+    "PerfPartie",
+    "categorie",
+    "generer",
+    "generer_duel",
+    "generer_partie",
+    "generer_vanne_duel",
+    "generer_vanne_en_game",
+    "generer_vanne_partie",
+]
