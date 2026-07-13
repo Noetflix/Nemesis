@@ -186,6 +186,19 @@ async def _post_embed(channel: discord.abc.Messageable, *embeds: discord.Embed) 
     return await channel.send(embeds=list(embeds))
 
 
+def _reattacher_logo(embed: discord.Embed) -> None:
+    """Remet les icônes de l'embed en « attachment:// » avant une édition.
+
+    Un embed relu depuis un message expose ses icônes via une URL CDN, plus via
+    « attachment:// » : la pièce jointe n'est alors plus référencée et Discord l'affiche
+    en grande image. On restaure la référence pour la garder masquée.
+    """
+    if embed.author and embed.author.name:
+        embed.set_author(name=embed.author.name, icon_url=_LOGO_ATTACHMENT)
+    if embed.footer and embed.footer.text:
+        embed.set_footer(text=embed.footer.text, icon_url=_LOGO_ATTACHMENT)
+
+
 def _parse_heures(spec: str, tz_nom: str) -> list[datetime.time]:
     """Transforme « HH:MM,HH:MM » + fuseau en heures de déclenchement (aware)."""
     try:
@@ -768,6 +781,7 @@ class GestionnaireParis:
     async def _verrouiller(message: discord.Message, votes: _ParisVotes) -> None:
         """Marque le sondage comme fermé et fige le décompte."""
         embed = message.embeds[0] if message.embeds else discord.Embed()
+        _reattacher_logo(embed)
         embed.add_field(
             name="🔒 Paris fermés",
             value=f"{_EMOJI_VICTOIRE} {len(votes.victoire)}  ·  {_EMOJI_DEFAITE} {len(votes.defaite)}",
@@ -783,6 +797,7 @@ class GestionnaireParis:
     async def _annuler(message: discord.Message) -> None:
         """Annule le pari : la partie a disparu (dodge ou remake) avant la fermeture."""
         embed = message.embeds[0] if message.embeds else discord.Embed()
+        _reattacher_logo(embed)
         embed.add_field(
             name="❌ Pari annulé",
             value="La partie n'existe plus (dodge ou remake).",
