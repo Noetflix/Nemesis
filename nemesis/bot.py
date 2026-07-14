@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 import sys
@@ -176,14 +177,26 @@ async def _reply_embed(ctx: commands.Context, *embeds: discord.Embed) -> None:
         await ctx.reply(embeds=list(embeds))
 
 
-async def _post_embed(channel: discord.abc.Messageable, *embeds: discord.Embed) -> None:
-    """Poste un ou plusieurs embeds dans un salon, avec le logo joint."""
+async def _post_embed(channel: discord.abc.Messageable, *embeds: discord.Embed) -> discord.Message:
+    """Poste un ou plusieurs embeds dans un salon (logo joint) et renvoie le message."""
     if _LOGO_PATH.is_file():
-        await channel.send(
+        return await channel.send(
             embeds=list(embeds), file=discord.File(_LOGO_PATH, filename=_LOGO_FILENAME)
         )
-    else:
-        await channel.send(embeds=list(embeds))
+    return await channel.send(embeds=list(embeds))
+
+
+def _reattacher_logo(embed: discord.Embed) -> None:
+    """Remet les icônes de l'embed en « attachment:// » avant une édition.
+
+    Un embed relu depuis un message expose ses icônes via une URL CDN, plus via
+    « attachment:// » : la pièce jointe n'est alors plus référencée et Discord l'affiche
+    en grande image. On restaure la référence pour la garder masquée.
+    """
+    if embed.author and embed.author.name:
+        embed.set_author(name=embed.author.name, icon_url=_LOGO_ATTACHMENT)
+    if embed.footer and embed.footer.text:
+        embed.set_footer(text=embed.footer.text, icon_url=_LOGO_ATTACHMENT)
 
 
 def _parse_heures(spec: str, tz_nom: str) -> list[datetime.time]:
@@ -644,13 +657,157 @@ def _build_help_embed(prefix: str) -> discord.Embed:
         value=(
             "• 🏆 **Classement** posté chaque jour à 10h et 20h\n"
             "• 📊 **Notif de fin de partie** classée (stats + vanne + LP + GIF)\n"
-            "• ⚔️ **Alerte « en game »** quand un membre lance une classée"
+            "• ⚔️ **Alerte « en game »** quand un membre lance une classée\n"
+            "• 🎲 **Pari** 👍/👎 sur l'issue de la partie (fermé après 5 min)"
         ),
         inline=False,
     )
     embed.set_footer(text="Némésis · Données Riot Games", icon_url=_LOGO_ATTACHMENT)
     embed.timestamp = discord.utils.utcnow()
     return embed
+
+
+# Pari sur l'issue d'une partie, greffé sur l'alerte « en game ».
+_EMOJI_VICTOIRE = "👍"
+_EMOJI_DEFAITE = "👎"
+_DUREE_PARI_S = 300  # fenêtre de pari : 5 minutes après le post du sondage.
+
+
+class _ParisVotes:
+    """Votants d'un pari, par camp (identifiants Discord)."""
+
+    __slots__ = ("victoire", "defaite")
+
+    def __init__(self) -> None:
+        self.victoire: set[int] = set()
+        self.defaite: set[int] = set()
+
+
+class GestionnaireParis:
+    """Gère les paris à réactions greffés sur les alertes « en game ».
+
+    Ouvre un sondage 👍/👎 sur la notif, le ferme 5 min plus tard (si la partie existe
+    encore, sinon l'annule), puis révèle les gagnants à la fin de la partie.
+    """
+
+    def __init__(self, bot: commands.Bot, riot: RiotClient) -> None:
+        self._bot = bot
+        self._riot = riot
+        # game_id -> votants verrouillés, en attente du résultat de la partie.
+        self._verrouilles: dict[str, _ParisVotes] = {}
+
+    async def ouvrir(self, message: discord.Message, puuid: str, jeu: LiveGame) -> None:
+        """Ajoute les réactions de pari et programme la fermeture dans 5 minutes."""
+        try:
+            await message.add_reaction(_EMOJI_VICTOIRE)
+            await message.add_reaction(_EMOJI_DEFAITE)
+        except discord.HTTPException:
+            return
+        asyncio.create_task(self._fermer_plus_tard(message, puuid, jeu))
+
+    async def reveler(self, salon: discord.abc.Messageable, game_id: str, win: bool) -> None:
+        """Annonce le résultat du pari (gagnants/perdants) à la fin de la partie."""
+        votes = self._verrouilles.pop(game_id, None)
+        if votes is None:  # pas de pari verrouillé pour cette partie.
+            return
+        # Les indécis (ayant voté les deux) ne comptent dans aucun camp.
+        gagnants = (votes.victoire - votes.defaite) if win else (votes.defaite - votes.victoire)
+        perdants = (votes.defaite - votes.victoire) if win else (votes.victoire - votes.defaite)
+
+        issue = "Victoire" if win else "Défaite"
+        couleur = _COULEUR_VICTOIRE if win else _COULEUR_DEFAITE
+        embed = discord.Embed(title=f"🎲 Résultat du pari — {issue} !", color=couleur)
+        if gagnants:
+            embed.add_field(
+                name="✅ Ont vu juste",
+                value=", ".join(f"<@{uid}>" for uid in gagnants),
+                inline=False,
+            )
+        if perdants:
+            embed.add_field(
+                name="❌ Se sont plantés",
+                value=", ".join(f"<@{uid}>" for uid in perdants),
+                inline=False,
+            )
+        if not gagnants and not perdants:
+            embed.description = "Personne n'avait osé parier 🦗"
+        try:
+            await salon.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
+    async def _fermer_plus_tard(self, message: discord.Message, puuid: str, jeu: LiveGame) -> None:
+        """Attend 5 min puis ferme le pari (ou l'annule si la partie n'existe plus)."""
+        await asyncio.sleep(_DUREE_PARI_S)
+
+        # La partie existe-t-elle encore ? En cas d'erreur API, on verrouille par prudence
+        # (un 404 = partie disparue -> annulation ; sinon on ne perd pas les paris).
+        try:
+            actuel = self._riot.active_game(puuid)
+            toujours = actuel is not None and actuel.game_id == jeu.game_id
+        except ApiError:
+            toujours = True
+
+        try:
+            message = await message.channel.fetch_message(message.id)
+        except discord.HTTPException:
+            return
+
+        if not toujours:
+            await self._annuler(message)
+            return
+        votes = await self._collecter(message)
+        self._verrouilles[jeu.game_id] = votes
+        await self._verrouiller(message, votes)
+
+    @staticmethod
+    async def _collecter(message: discord.Message) -> _ParisVotes:
+        """Relève les votants de chaque camp au moment de la fermeture."""
+        votes = _ParisVotes()
+        for reaction in message.reactions:
+            emoji = str(reaction.emoji)
+            if emoji == _EMOJI_VICTOIRE:
+                cible = votes.victoire
+            elif emoji == _EMOJI_DEFAITE:
+                cible = votes.defaite
+            else:
+                continue
+            async for user in reaction.users():
+                if not user.bot:
+                    cible.add(user.id)
+        return votes
+
+    @staticmethod
+    async def _verrouiller(message: discord.Message, votes: _ParisVotes) -> None:
+        """Marque le sondage comme fermé et fige le décompte."""
+        embed = message.embeds[0] if message.embeds else discord.Embed()
+        _reattacher_logo(embed)
+        embed.add_field(
+            name="🔒 Paris fermés",
+            value=f"{_EMOJI_VICTOIRE} {len(votes.victoire)}  ·  {_EMOJI_DEFAITE} {len(votes.defaite)}",
+            inline=False,
+        )
+        try:
+            await message.edit(embed=embed)
+            await message.clear_reactions()
+        except discord.HTTPException:
+            pass
+
+    @staticmethod
+    async def _annuler(message: discord.Message) -> None:
+        """Annule le pari : la partie a disparu (dodge ou remake) avant la fermeture."""
+        embed = message.embeds[0] if message.embeds else discord.Embed()
+        _reattacher_logo(embed)
+        embed.add_field(
+            name="❌ Pari annulé",
+            value="La partie n'existe plus (dodge ou remake).",
+            inline=False,
+        )
+        try:
+            await message.edit(embed=embed)
+            await message.clear_reactions()
+        except discord.HTTPException:
+            pass
 
 
 def create_bot(config: Config) -> commands.Bot:
@@ -664,6 +821,7 @@ def create_bot(config: Config) -> commands.Bot:
     # help_command=None : on remplace l'aide texte par défaut par notre embed !help.
     bot = commands.Bot(command_prefix=config.command_prefix, intents=intents, help_command=None)
     riot = RiotClient(config.riot_api_key, platform=config.default_platform)
+    paris = GestionnaireParis(bot, riot)
 
     @bot.command(name="stats")
     async def stats(ctx: commands.Context, *, riot_id: str) -> None:
@@ -839,6 +997,9 @@ def create_bot(config: Config) -> commands.Bot:
         await _post_embed(salon, *embeds)
         logger.info("Partie annoncée pour %s (match %s).", riot_id, match_id)
 
+        # Révèle les gagnants du pari éventuel (match_id « EUW1_<gameId> »).
+        await paris.reveler(salon, match_id.split("_")[-1], detail.win)
+
     def _partie_en_cours(puuid: str) -> LiveGame | None:
         """Partie en cours du joueur, ou None (erreurs API dégradées silencieusement)."""
         try:
@@ -847,15 +1008,16 @@ def create_bot(config: Config) -> commands.Bot:
             logger.warning("Spectator en échec (puuid=%s) : %s", puuid[:8], exc)
             return None
 
-    async def _alerter_en_game(riot_id: str, jeu: LiveGame) -> None:
-        """Poste l'alerte « en game » dans le salon dédié."""
+    async def _alerter_en_game(riot_id: str, puuid: str, jeu: LiveGame) -> None:
+        """Poste l'alerte « en game » et ouvre le pari (sondage 👍/👎)."""
         salon = bot.get_channel(match_channel)
         if salon is None:
             return
         nom = riot_id.split("#", 1)[0]
         vanne = trashtalk.generer_vanne_en_game(nom, jeu.champion)
-        await _post_embed(salon, _build_live_embed(nom, jeu, vanne))
-        logger.info("Alerte en game pour %s (%s).", nom, jeu.champion)
+        message = await _post_embed(salon, _build_live_embed(nom, jeu, vanne))
+        await paris.ouvrir(message, puuid, jeu)
+        logger.info("Alerte en game + pari ouvert pour %s (%s).", nom, jeu.champion)
 
     @tasks.loop(minutes=config.match_poll_minutes)
     async def surveillance_parties() -> None:
@@ -888,7 +1050,7 @@ def create_bot(config: Config) -> commands.Bot:
                 en_game.pop(riot_id, None)
             elif jeu.is_ranked and en_game.get(riot_id) != jeu.game_id:
                 en_game[riot_id] = jeu.game_id
-                await _alerter_en_game(riot_id, jeu)
+                await _alerter_en_game(riot_id, puuid, jeu)
 
             if match_id and match_id != dernier_match.get(riot_id):
                 dernier_match[riot_id] = match_id
