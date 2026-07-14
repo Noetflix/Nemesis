@@ -695,6 +695,9 @@ class GestionnaireParis:
         self._riot = riot
         # game_id -> votants verrouillés, en attente du résultat de la partie.
         self._verrouilles: dict[str, _ParisVotes] = {}
+        # Références fortes aux tâches de fermeture différée : sans elles, le ramasse-miettes
+        # peut supprimer une tâche en cours d'exécution (cf. doc asyncio.create_task).
+        self._taches: set[asyncio.Task] = set()
 
     async def ouvrir(self, message: discord.Message, puuid: str, jeu: LiveGame) -> None:
         """Ajoute les réactions de pari et programme la fermeture dans 5 minutes."""
@@ -703,7 +706,10 @@ class GestionnaireParis:
             await message.add_reaction(_EMOJI_DEFAITE)
         except discord.HTTPException:
             return
-        asyncio.create_task(self._fermer_plus_tard(message, puuid, jeu))
+        # On garde une référence forte à la tâche et on la retire une fois terminée.
+        tache = asyncio.create_task(self._fermer_plus_tard(message, puuid, jeu))
+        self._taches.add(tache)
+        tache.add_done_callback(self._taches.discard)
 
     async def reveler(self, salon: discord.abc.Messageable, game_id: str, win: bool) -> None:
         """Annonce le résultat du pari (gagnants/perdants) à la fin de la partie."""
