@@ -137,6 +137,45 @@ function renderPlayers(players) {
     .join("");
 }
 
+function renderBots(bots) {
+  const box = $("bots");
+  $("bots-count").textContent = bots.length ? `${bots.length} bot${bots.length > 1 ? "s" : ""}` : "";
+  if (!bots.length) {
+    box.innerHTML = `<div class="empty">Aucun bot n'a encore enregistré d'activité.</div>`;
+    return;
+  }
+  // « Actif » si le dernier évènement date de moins de 15 min (heuristique de présence).
+  const seuil = Date.now() / 1000 - 15 * 60;
+  box.innerHTML = bots
+    .map((b) => {
+      const actif = b.last_active && b.last_active >= seuil;
+      const metrics = [
+        [b.commands, "cmds"],
+        [b.games, "games"],
+        [b.matches, "parties"],
+        [b.bets, "paris"],
+      ];
+      return `<div class="botcard">
+        <div class="botcard__head">
+          <span class="botcard__name">
+            <span class="botcard__dot botcard__dot--${actif ? "on" : "off"}"></span>${b.bot}
+          </span>
+          <span class="botcard__tag">${actif ? "actif" : "inactif"}</span>
+        </div>
+        <div class="botcard__metrics">
+          ${metrics
+            .map(
+              ([v, l]) =>
+                `<div class="botcard__metric"><div class="botcard__mval">${v}</div><div class="botcard__mlabel">${l}</div></div>`
+            )
+            .join("")}
+        </div>
+        <div class="botcard__foot">${b.last_active ? "Dernière activité " + tempsRelatif(b.last_active) : "Aucune activité"}</div>
+      </div>`;
+    })
+    .join("");
+}
+
 function renderEvents(events) {
   const box = $("events");
   if (!events.length) {
@@ -157,8 +196,9 @@ function renderEvents(events) {
 async function refresh() {
   $("refresh").classList.add("spin");
   try {
-    const [overview, commands, activity, players, events] = await Promise.all([
+    const [overview, bots, commands, activity, players, events] = await Promise.all([
       getJSON("/api/overview"),
+      getJSON("/api/bots"),
       getJSON("/api/commands"),
       getJSON("/api/activity?days=14"),
       getJSON("/api/players"),
@@ -167,6 +207,7 @@ async function refresh() {
     setOnline(true);
     $("uptime").textContent = overview.uptime_seconds != null ? `uptime ${fmtDuree(overview.uptime_seconds)}` : "";
     renderKpis(overview);
+    renderBots(bots);
     renderActivity(activity);
     renderCommands(commands);
     renderPlayers(players);

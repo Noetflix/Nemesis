@@ -180,6 +180,85 @@ main {
   margin-top: 6px;
 }
 
+/* ---------------------------------------------------------------- bots (multi-bots) */
+.bots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+.botcard {
+  background: var(--bg-elev2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.botcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.botcard__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.botcard__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 6px currentColor;
+}
+.botcard__dot--on {
+  background: #43d787;
+  color: #43d787;
+}
+.botcard__dot--off {
+  background: var(--text-dim);
+  color: transparent;
+  box-shadow: none;
+}
+.botcard__tag {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.botcard__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.botcard__metric {
+  text-align: center;
+}
+.botcard__mval {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.botcard__mlabel {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.botcard__foot {
+  color: var(--text-dim);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
 .card {
   background: var(--bg-elev);
   border: 1px solid var(--line);

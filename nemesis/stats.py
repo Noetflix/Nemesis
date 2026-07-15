@@ -54,10 +54,14 @@ class PlayerRecord:
 
 @dataclass(frozen=True)
 class BotActivity:
-    """Activité résumée d'un bot (bloc du multi-bots)."""
+    """Bilan d'un bot pour la vue multi-bots."""
 
     bot: str
     commands: int
+    games: int
+    matches: int
+    bets: int
+    events: int
     last_active: float | None
 
 
@@ -325,18 +329,26 @@ class StatsStore:
         return joueurs
 
     def bots(self) -> list[BotActivity]:
-        """Activité par bot (préparé pour le multi-bots)."""
+        """Bilan par bot (commandes, games, parties, paris) pour la vue multi-bots."""
         rows = self.conn.execute(
             "SELECT bot, "
             "  SUM(CASE WHEN kind = ? THEN 1 ELSE 0 END) AS commands, "
+            "  SUM(CASE WHEN kind = ? THEN 1 ELSE 0 END) AS games, "
+            "  SUM(CASE WHEN kind = ? THEN 1 ELSE 0 END) AS matches, "
+            "  SUM(CASE WHEN kind = ? THEN 1 ELSE 0 END) AS bets, "
+            "  COUNT(*) AS events, "
             "  MAX(ts) AS last_active "
-            "FROM events GROUP BY bot ORDER BY commands DESC",
-            (KIND_COMMAND,),
+            "FROM events GROUP BY bot ORDER BY events DESC",
+            (KIND_COMMAND, KIND_GAME_ALERT, KIND_MATCH_NOTIF, KIND_BET_RESULT),
         ).fetchall()
         return [
             BotActivity(
                 bot=r["bot"],
                 commands=int(r["commands"] or 0),
+                games=int(r["games"] or 0),
+                matches=int(r["matches"] or 0),
+                bets=int(r["bets"] or 0),
+                events=int(r["events"] or 0),
                 last_active=r["last_active"],
             )
             for r in rows

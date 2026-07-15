@@ -19,7 +19,13 @@ from pathlib import Path
 # Rendre le package `nemesis` importable quand on lance ce script directement.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nemesis.stats import KIND_COMMAND, StatsStore  # noqa: E402
+from nemesis.stats import (  # noqa: E402
+    KIND_BET_RESULT,
+    KIND_COMMAND,
+    KIND_GAME_ALERT,
+    KIND_MATCH_NOTIF,
+    StatsStore,
+)
 from nemesis.statsweb import start_stats_server  # noqa: E402
 
 HOST, PORT = "127.0.0.1", 8787
@@ -57,12 +63,45 @@ def seed(store: StatsStore) -> None:
             )
 
 
+def seed_autre_bot(
+    store: StatsStore, bot: str, *, commandes: int, games: int, recent: bool
+) -> None:
+    """Injecte un second bot factice dans la même base (pour la vue multi-bots)."""
+    now = time.time()
+    # Dernière activité : récente (bot « actif ») ou vieille de 2 jours (« inactif »).
+    fin = now - (5 * 60 if recent else 2 * 86400)
+    with store._lock:
+        for _ in range(commandes):
+            store.conn.execute(
+                "INSERT INTO events (ts, bot, kind, name) VALUES (?, ?, ?, ?)",
+                (fin - random.randint(0, 9 * 86400), bot, KIND_COMMAND, "play"),
+            )
+        for _ in range(games):
+            ts = fin - random.randint(0, 3 * 86400)
+            store.conn.execute(
+                "INSERT INTO events (ts, bot, kind, name) VALUES (?, ?, ?, ?)",
+                (ts, bot, KIND_GAME_ALERT, "demo"),
+            )
+            store.conn.execute(
+                "INSERT INTO events (ts, bot, kind, name, win) VALUES (?, ?, ?, ?, ?)",
+                (ts + 1800, bot, KIND_MATCH_NOTIF, "demo", random.randint(0, 1)),
+            )
+        store.conn.execute(  # cadre l'activité « la plus récente » à `fin`
+            "INSERT INTO events (ts, bot, kind, count) VALUES (?, ?, ?, ?)",
+            (fin, bot, KIND_BET_RESULT, random.randint(0, 4)),
+        )
+        store.conn.commit()
+
+
 async def main() -> None:
     db = Path(__file__).resolve().parent / "demo_stats.db"
     if db.exists():
         db.unlink()
     store = StatsStore.open(db, bot_name="nemesis")
     seed(store)
+    # Deux bots supplémentaires pour illustrer la vue multi-bots.
+    seed_autre_bot(store, "loutre-music", commandes=73, games=0, recent=True)
+    seed_autre_bot(store, "tft-tracker", commandes=26, games=6, recent=False)
     await start_stats_server(store, host=HOST, port=PORT)
     print(f"Démo servie sur http://{HOST}:{PORT}  —  Ctrl+C pour arrêter.")
     print("Ouvre l'app :  uv run --group desktop python desktop/app.py")
