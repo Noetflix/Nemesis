@@ -10,9 +10,18 @@ Application gérée avec **uv** (pas de publication de paquet).
 - `config.py` — dataclass gelée `Config` + `load_config()` (secrets depuis `.env`).
 - `riot.py` — client de l'API Riot ; agrège les données en dataclasses (`PlayerSummary`).
 - `bot.py` — bot Discord, commandes, embeds, traduction des erreurs API.
+- `stats.py` — persistance SQLite de l'activité du bot + agrégats (dataclasses).
+- `statsweb.py` — petit serveur JSON (aiohttp) exposant les stats, démarré par `bot.py`.
 
-**Règle d'architecture :** toute la logique métier / API vit dans `riot.py` et renvoie des
-dataclasses. `bot.py` ne fait qu'orchestrer Discord (commandes, embeds, gestion d'erreurs).
+**Règle d'architecture :** toute la logique métier / API vit dans `riot.py` (et la
+persistance dans `stats.py`) et renvoie des dataclasses. `bot.py` ne fait qu'orchestrer
+Discord (commandes, embeds, gestion d'erreurs) et brancher la journalisation des stats.
+
+## App bureau (`desktop/`)
+
+Application Windows (PyWebView) affichant un tableau de bord des stats. Client HTTP pur
+qui interroge le serveur JSON du bot (`http://127.0.0.1:8787` en local, `NEMESIS_STATS_URL`
+pour un VPS) — il ne touche jamais la base directement. Voir `desktop/README.md`.
 
 ## Commandes
 
@@ -22,6 +31,11 @@ uv run python -m nemesis    # lancer le bot
 uv run ruff format .        # formatage
 uv run ruff check --fix     # lint + corrections
 uv add <paquet>             # ajouter une dépendance (jamais pip)
+
+# App bureau (tableau de bord des stats)
+uv run --group desktop python desktop/serve_demo.py  # API de démo (données factices)
+uv run --group desktop python desktop/app.py         # ouvrir la fenêtre
+uv run --group desktop python desktop/build.py       # construire le .exe (icône Némésis)
 ```
 
 ## Conventions
