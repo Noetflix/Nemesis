@@ -14,6 +14,8 @@ from discord.ext import commands, tasks
 
 from nemesis import gifs, trashtalk
 from nemesis.config import Config, load_config
+from nemesis.stats import StatsStore
+from nemesis.statsweb import start_stats_server
 from nemesis.riot import (
     ApiError,
     ChampionMastery,
@@ -690,9 +692,12 @@ class GestionnaireParis:
     encore, sinon l'annule), puis révèle les gagnants à la fin de la partie.
     """
 
-    def __init__(self, bot: commands.Bot, riot: RiotClient) -> None:
+    def __init__(
+        self, bot: commands.Bot, riot: RiotClient, store: StatsStore | None = None
+    ) -> None:
         self._bot = bot
         self._riot = riot
+        self._store = store
         # game_id -> votants verrouillés, en attente du résultat de la partie.
         self._verrouilles: dict[str, _ParisVotes] = {}
         # Références fortes aux tâches de fermeture différée : sans elles, le ramasse-miettes
@@ -716,6 +721,9 @@ class GestionnaireParis:
         votes = self._verrouilles.pop(game_id, None)
         if votes is None:  # pas de pari verrouillé pour cette partie.
             return
+        if self._store is not None:
+            participants = len(votes.victoire | votes.defaite)
+            self._store.record_bet_result(game_id, win, participants)
         # Les indécis (ayant voté les deux) ne comptent dans aucun camp.
         gagnants = (votes.victoire - votes.defaite) if win else (votes.defaite - votes.victoire)
         perdants = (votes.defaite - votes.victoire) if win else (votes.victoire - votes.defaite)
@@ -827,7 +835,14 @@ def create_bot(config: Config) -> commands.Bot:
     # help_command=None : on remplace l'aide texte par défaut par notre embed !help.
     bot = commands.Bot(command_prefix=config.command_prefix, intents=intents, help_command=None)
     riot = RiotClient(config.riot_api_key, platform=config.default_platform)
-    paris = GestionnaireParis(bot, riot)
+
+    # Journalisation des stats (SQLite) exposée au tableau de bord bureau, si activée.
+    store = (
+        StatsStore.open(config.stats_db_path, bot_name=config.stats_bot_name)
+        if config.stats_enabled
+        else None
+    )
+    paris = GestionnaireParis(bot, riot, store)
 
     @bot.command(name="stats")
     async def stats(ctx: commands.Context, *, riot_id: str) -> None:
@@ -1001,6 +1016,8 @@ def create_bot(config: Config) -> commands.Bot:
 
         embeds = await _finaliser_notif(config, riot_id, detail, rank_apres, variation)
         await _post_embed(salon, *embeds)
+        if store is not None:
+            store.record_match_notif(riot_id, detail.win)
         logger.info("Partie annoncée pour %s (match %s).", riot_id, match_id)
 
         # Révèle les gagnants du pari éventuel (match_id « EUW1_<gameId> »).
@@ -1023,6 +1040,8 @@ def create_bot(config: Config) -> commands.Bot:
         vanne = trashtalk.generer_vanne_en_game(nom, jeu.champion)
         message = await _post_embed(salon, _build_live_embed(nom, jeu, vanne))
         await paris.ouvrir(message, puuid, jeu)
+        if store is not None:
+            store.record_game_alert(riot_id, jeu.champion)
         logger.info("Alerte en game + pari ouvert pour %s (%s).", nom, jeu.champion)
 
     @tasks.loop(minutes=config.match_poll_minutes)
@@ -1069,9 +1088,32 @@ def create_bot(config: Config) -> commands.Bot:
     async def _avant_surveillance() -> None:
         await bot.wait_until_ready()
 
+    if store is not None:
+
+        @bot.event
+        async def on_command_completion(ctx: commands.Context) -> None:
+            """Journalise chaque commande réussie pour le tableau de bord."""
+            if ctx.command is not None:
+                store.record_command(ctx.command.qualified_name)
+
+        @bot.event
+        async def on_command_error(ctx: commands.Context, error: Exception) -> None:
+            """Journalise les erreurs inattendues (hors commande inconnue)."""
+            if isinstance(error, commands.CommandNotFound):
+                return
+            nom = ctx.command.qualified_name if ctx.command else None
+            store.record_command_error(nom, repr(error))
+            logger.warning("Erreur commande %s : %r", nom, error)
+
     @bot.event
     async def on_ready() -> None:
         logger.info("Connecté en tant que %s (id=%s)", bot.user, bot.user.id if bot.user else "?")
+        # Démarre le serveur de stats une seule fois (on_ready peut refirer à la reconnexion).
+        if store is not None and getattr(bot, "_stats_runner", None) is None:
+            store.mark_start()
+            bot._stats_runner = await start_stats_server(
+                store, host=config.stats_api_host, port=config.stats_api_port
+            )
         # Démarre la planification une seule fois, si un salon et des heures sont définis.
         if config.classement_channel_id and heures and not classement_planifie.is_running():
             classement_planifie.start()
