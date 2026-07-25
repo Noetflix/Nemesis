@@ -1,0 +1,33 @@
+# Service systemd pour faire tourner Némésis en continu sur le VPS.
+# Installation : voir deploy/DEPLOY.md (copie dans /etc/systemd/system/, enable, start).
+#
+# Hypothèses (adapter si besoin) :
+#   - utilisateur « ubuntu », dépôt cloné dans /home/ubuntu/nemesis
+#   - uv installé pour cet utilisateur (~/.local/bin/uv)
+# Les secrets sont lus depuis le fichier .env du dossier projet (python-dotenv) :
+# pas d'EnvironmentFile ici, pour éviter les divergences de parsing des guillemets.
+
+[Unit]
+Description=Némésis — bot Discord de stats League of Legends
+# On attend le réseau : le bot ouvre une WebSocket vers Discord au démarrage.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nemesis
+# uv bootstrappe Python 3.14 tout seul ; HOME est requis pour son cache.
+Environment=HOME=/home/ubuntu
+ExecStart=/home/ubuntu/.local/bin/uv run python -m nemesis
+# Redémarrage automatique en cas de crash (ou de coupure réseau transitoire).
+Restart=on-failure
+RestartSec=5
+
+# Durcissement léger.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

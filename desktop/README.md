@@ -46,13 +46,22 @@ Némésis. Clic droit dessus → *Envoyer vers* → *Bureau (créer un raccourci
 
 ## Viser un serveur distant (VPS)
 
-L'app lit la variable d'environnement `NEMESIS_STATS_URL`. Quand le bot tournera sur
-un VPS, il suffit de la définir avant de lancer l'app (ou dans le raccourci) :
+Déploiement complet du bot sur une VM (Oracle Always Free, systemd) : voir
+[`deploy/DEPLOY.md`](../deploy/DEPLOY.md).
+
+**Recommandé — tunnel SSH (privé, zéro config).** Le bot garde `STATS_API_HOST=127.0.0.1`
+sur le VPS ; on rapatrie le port en local, et l'app marche telle quelle (son défaut est
+déjà `http://127.0.0.1:8787`) :
+
+```powershell
+ssh -N -L 8787:127.0.0.1:8787 ubuntu@<IP_DU_VPS>   # laisser ouvert
+uv run --group desktop python desktop/app.py         # dans une autre fenêtre
+```
+
+**Alternative — API publique.** Définir `NEMESIS_STATS_URL` avant de lancer l'app et,
+côté VPS, mettre `STATS_API_HOST=0.0.0.0` derrière un reverse proxy HTTPS :
 
 ```bash
 set NEMESIS_STATS_URL=https://mon-vps.exemple
 uv run --group desktop python desktop/app.py
 ```
-
-Côté bot/VPS, mettre `STATS_API_HOST=0.0.0.0` (idéalement derrière un reverse proxy
-HTTPS) pour rendre l'API joignable depuis l'extérieur.

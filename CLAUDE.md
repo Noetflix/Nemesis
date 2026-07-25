@@ -23,6 +23,12 @@ Application Windows (PyWebView) affichant un tableau de bord des stats. Client H
 qui interroge le serveur JSON du bot (`http://127.0.0.1:8787` en local, `NEMESIS_STATS_URL`
 pour un VPS) — il ne touche jamais la base directement. Voir `desktop/README.md`.
 
+## Déploiement (`deploy/`)
+
+Faire tourner le bot 24/7 sur une VM (Oracle Always Free) via un service systemd
+(`deploy/nemesis.service`). Les stats se consultent par tunnel SSH — rien n'est exposé
+publiquement. Procédure complète dans `deploy/DEPLOY.md`.
+
 ## Commandes
 
 ```bash
