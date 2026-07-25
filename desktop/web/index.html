@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Némésis — Stats</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="logo.png" alt="Némésis" class="brand__logo" />
+        <div class="brand__text">
+          <h1>Némésis</h1>
+          <span class="brand__sub">Tableau de bord</span>
+        </div>
+      </div>
+      <div class="topbar__right">
+        <span id="status" class="pill pill--muted">Connexion…</span>
+        <span id="uptime" class="uptime"></span>
+        <button id="refresh" class="btn" title="Rafraîchir">↻</button>
+      </div>
+    </header>
+
+    <main id="app">
+      <!-- KPI -->
+      <section class="kpis" id="kpis"></section>
+
+      <!-- Mes bots (multi-bots) -->
+      <section class="card card--wide">
+        <div class="card__head">
+          <h2>Mes bots</h2>
+          <span class="card__hint" id="bots-count"></span>
+        </div>
+        <div id="bots" class="bots-grid"></div>
+      </section>
+
+      <!-- Activité -->
+      <section class="card card--wide">
+        <div class="card__head">
+          <h2>Activité — commandes / jour</h2>
+          <span class="card__hint" id="activity-total"></span>
+        </div>
+        <div id="activity" class="chart"></div>
+      </section>
+
+      <div class="grid2">
+        <!-- Commandes -->
+        <section class="card">
+          <div class="card__head"><h2>Commandes les plus utilisées</h2></div>
+          <div id="commands" class="bars"></div>
+        </section>
+
+        <!-- Joueurs suivis -->
+        <section class="card">
+          <div class="card__head"><h2>Joueurs suivis</h2></div>
+          <div id="players" class="players"></div>
+        </section>
+      </div>
+
+      <!-- Flux d'évènements -->
+      <section class="card card--wide">
+        <div class="card__head"><h2>Activité récente</h2></div>
+        <ul id="events" class="feed"></ul>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span id="api-label" class="footer__api"></span>
+      <span class="footer__spacer"></span>
+      <span id="clock" class="footer__clock"></span>
+    </footer>
+
+    <div id="offline" class="offline hidden">
+      <img src="logo.png" alt="" class="offline__logo" />
+      <h2>Bot hors ligne</h2>
+      <p>Impossible de joindre l'API des stats.<br />Lance Némésis, puis clique sur ↻.</p>
+      <code id="offline-url"></code>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

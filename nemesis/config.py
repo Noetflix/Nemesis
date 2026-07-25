@@ -34,6 +34,14 @@ class Config:
     giphy_api_key: str | None = None
     giphy_requete_victoire: str = "league of legends victory celebration"
     giphy_requete_defaite: str = "sad defeat fail"
+    # Tableau de bord des stats. Le bot enregistre son activité dans un SQLite et
+    # l'expose via un petit serveur JSON, consommé par l'app bureau (voir desktop/).
+    # stats_api_host = 127.0.0.1 en local ; passer à 0.0.0.0 sur un VPS pour l'exposer.
+    stats_enabled: bool = True
+    stats_db_path: str = "data/stats.db"
+    stats_api_host: str = "127.0.0.1"
+    stats_api_port: int = 8787
+    stats_bot_name: str = "nemesis"  # identifiant du bot (préparé pour le multi-bots)
 
     @property
     def match_channel_effectif(self) -> int | None:
@@ -89,6 +97,11 @@ def load_config() -> Config:
             "GIPHY_REQUETE_VICTOIRE", "league of legends victory celebration"
         ),
         giphy_requete_defaite=os.getenv("GIPHY_REQUETE_DEFAITE", "sad defeat fail"),
+        stats_enabled=_bool_env(os.getenv("STATS_ENABLED"), defaut=True),
+        stats_db_path=os.getenv("STATS_DB_PATH", "data/stats.db"),
+        stats_api_host=os.getenv("STATS_API_HOST", "127.0.0.1"),
+        stats_api_port=_int_positif(os.getenv("STATS_API_PORT"), defaut=8787),
+        stats_bot_name=os.getenv("STATS_BOT_NAME", "nemesis"),
     )
 
 
@@ -103,3 +116,10 @@ def _int_positif(valeur: str | None, *, defaut: int) -> int:
     """Entier strictement positif depuis l'environnement, sinon la valeur par défaut."""
     entier = _int_ou_none(valeur)
     return entier if entier and entier > 0 else defaut
+
+
+def _bool_env(valeur: str | None, *, defaut: bool) -> bool:
+    """Interprète une variable d'environnement comme booléen (1/true/oui/on)."""
+    if valeur is None:
+        return defaut
+    return valeur.strip().lower() in {"1", "true", "vrai", "oui", "yes", "on"}

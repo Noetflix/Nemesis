@@ -14,3 +14,19 @@ __pycache__/
 
 # IDE
 .idea/
+
+# Données de stats (base SQLite générée au runtime)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Build de l'app bureau (PyInstaller) et icône générée
+desktop/build/
+desktop/dist/
+desktop/*.spec
+desktop/nemesis.ico
+desktop/demo_stats.db
+
+# Fichiers temporaires de mise au point
+scratchpad_*
