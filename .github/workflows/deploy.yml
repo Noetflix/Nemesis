@@ -1,0 +1,61 @@
+name: Deploy
+
+# Déploiement en production (VM Oracle Always Free).
+# - à chaque merge/push sur main (précédé d'une validation manuelle, cf. environnement)
+# - ou à la demande depuis l'onglet Actions (« Run workflow »).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# On ne veut jamais deux déploiements concurrents sur la même VM,
+# et on ne coupe pas un déploiement déjà lancé.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # 1. On revérifie le code avant de toucher la prod (ceinture + bretelles).
+  verify:
+    name: Vérifs (lint + import)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installation d'uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Formatage (ruff format --check)
+        run: uv run ruff format --check .
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+      - name: Le projet s'importe sans erreur
+        run: uv run python -c "import nemesis.bot"
+
+  # 2. Déploiement SSH. L'environnement « production » impose la validation
+  #    manuelle (required reviewer) : le job attend l'approbation avant de partir.
+  deploy:
+    name: Déploiement VM Oracle
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Mise à jour du bot sur la VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          # git reset --hard : on aligne strictement sur origin/main.
+          # .env et data/ sont gitignore → jamais écrasés par le reset.
+          script: |
+            set -euo pipefail
+            cd ~/nemesis
+            git fetch --all --prune
+            git reset --hard origin/main
+            ~/.local/bin/uv sync
+            sudo systemctl restart nemesis
+            sleep 2
+            # Smoke test : le service doit être actif après redémarrage.
+            systemctl is-active nemesis

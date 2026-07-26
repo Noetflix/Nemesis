@@ -116,12 +116,18 @@ Fermer le terminal du tunnel coupe l'accès (l'API reste injoignable autrement).
 
 ## 5. Mettre à jour le bot
 
+**Manuellement**, en SSH sur la VM :
+
 ```bash
 cd ~/nemesis
 git pull
 uv sync                         # au cas où des dépendances changent
 sudo systemctl restart nemesis
 ```
+
+**Automatiquement** (recommandé) via GitHub Actions : un merge sur `main` déclenche
+un déploiement gaté par une validation manuelle (SSH → `git reset --hard` + `uv sync`
++ redémarrage du service). Configuration complète dans **`deploy/CICD.md`**.
 
 ---
 

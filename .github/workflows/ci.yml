@@ -1,0 +1,39 @@
+name: CI
+
+# Intégration continue : on valide chaque proposition de fusion vers main.
+# (Le push sur main, lui, est géré par deploy.yml qui re-vérifie avant de déployer.)
+on:
+  pull_request:
+    branches: [main]
+
+# Une PR mise à jour annule le run précédent devenu obsolète.
+concurrency:
+  group: ci-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & import
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupération du code
+        uses: actions/checkout@v4
+
+      # uv bootstrappe Python 3.14 tout seul (comme sur le VPS).
+      - name: Installation d'uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Installation des dépendances
+        run: uv sync
+
+      # Mêmes vérifications que le skill « check » local.
+      - name: Formatage (ruff format --check)
+        run: uv run ruff format --check .
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Le projet s'importe sans erreur
+        run: uv run python -c "import nemesis.bot"
