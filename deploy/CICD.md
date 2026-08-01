@@ -1,4 +1,4 @@
-# CI/CD de Némésis (GitHub Actions → VM Oracle)
+# CI/CD de Némésis (GitHub Actions → VM AWS Lightsail)
 
 Pipeline en deux temps, calqué sur le flux dev → prod :
 
@@ -18,7 +18,7 @@ merge/push sur main ────▶  Deploy (deploy.yml)
 `main` = **prod**. Tes branches + PR = **dev**. Rien ne part en prod sans ton clic
 « Approve ».
 
-> Prérequis : la VM Oracle est en place et le bot tourne déjà en service systemd
+> Prérequis : la VM Lightsail est en place et le bot tourne déjà en service systemd
 > (voir `deploy/DEPLOY.md`). Le CI/CD ne fait que rejouer les étapes de la section
 > « Mettre à jour le bot » de façon automatisée et sécurisée.
 
@@ -68,7 +68,7 @@ sudo chmod 440 /etc/sudoers.d/nemesis-deploy
 
 | Secret | Valeur |
 | --- | --- |
-| `SSH_HOST` | IP publique de la VM Oracle |
+| `SSH_HOST` | IP statique de la VM Lightsail |
 | `SSH_USER` | `ubuntu` |
 | `SSH_KEY` | Contenu **entier** de la clé privée `nemesis_deploy` (avec les lignes `-----BEGIN/END-----`) |
 

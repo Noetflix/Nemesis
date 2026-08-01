@@ -46,7 +46,7 @@ Némésis. Clic droit dessus → *Envoyer vers* → *Bureau (créer un raccourci
 
 ## Viser un serveur distant (VPS)
 
-Déploiement complet du bot sur une VM (Oracle Always Free, systemd) : voir
+Déploiement complet du bot sur une VM (AWS Lightsail, systemd) : voir
 [`deploy/DEPLOY.md`](../deploy/DEPLOY.md).
 
 **Recommandé — tunnel SSH (privé, zéro config).** Le bot garde `STATS_API_HOST=127.0.0.1`

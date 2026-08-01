@@ -1,6 +1,6 @@
 name: Deploy
 
-# Déploiement en production (VM Oracle Always Free).
+# Déploiement en production (VM AWS Lightsail).
 # - à chaque merge/push sur main (précédé d'une validation manuelle, cf. environnement)
 # - ou à la demande depuis l'onglet Actions (« Run workflow »).
 on:
@@ -36,7 +36,7 @@ jobs:
   # 2. Déploiement SSH. L'environnement « production » impose la validation
   #    manuelle (required reviewer) : le job attend l'approbation avant de partir.
   deploy:
-    name: Déploiement VM Oracle
+    name: Déploiement VM Lightsail
     needs: verify
     runs-on: ubuntu-latest
     environment: production

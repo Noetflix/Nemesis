@@ -25,7 +25,7 @@ pour un VPS) — il ne touche jamais la base directement. Voir `desktop/README.m
 
 ## Déploiement (`deploy/`)
 
-Faire tourner le bot 24/7 sur une VM (Oracle Always Free) via un service systemd
+Faire tourner le bot 24/7 sur une VM (AWS Lightsail) via un service systemd
 (`deploy/nemesis.service`). Les stats se consultent par tunnel SSH — rien n'est exposé
 publiquement. Procédure complète dans `deploy/DEPLOY.md`.
 

@@ -1,15 +1,21 @@
-# Déploiement de Némésis sur un VPS (Oracle Cloud « Always Free »)
+# Déploiement de Némésis sur un VPS (AWS Lightsail)
 
-Faire tourner le bot **24/7** sur une VM Linux gratuite, avec redémarrage
-automatique (systemd) et consultation des stats depuis Windows via **tunnel SSH**
-(rien n'est exposé sur Internet : seul le port 22 est ouvert).
+Faire tourner le bot **24/7** sur une petite VM Linux **AWS Lightsail**, avec
+redémarrage automatique (systemd) et consultation des stats depuis Windows via
+**tunnel SSH** (rien n'est exposé sur Internet : seul le port 22 est ouvert).
 
 ```
-Discord ⇄  bot (VM Oracle, systemd)  ──▶  data/stats.db  ──▶  API JSON 127.0.0.1:8787
-                                                                     │
-   PC Windows : tunnel SSH  ssh -L 8787:127.0.0.1:8787  ────────────┘
+Discord ⇄  bot (VM Lightsail, systemd)  ──▶  data/stats.db  ──▶  API JSON 127.0.0.1:8787
+                                                                       │
+   PC Windows : tunnel SSH  ssh -L 8787:127.0.0.1:8787  ──────────────┘
                         puis app bureau (desktop/) → lit localhost:8787
 ```
+
+> 💰 **Coût.** Contrairement à Oracle « Always Free », Lightsail est **payant**
+> mais à **prix fixe** : le plan retenu (**5 $/mois**, 1 Go RAM, 2 vCPU, 40 Go SSD,
+> 2 To de transfert inclus) suffit très largement pour le bot. Le plan 3,50 $
+> (512 Mo) marche aussi mais peut être juste pendant `uv sync` — on peut
+> redimensionner plus tard sans réinstaller.
 
 > ⚠️ **Clé Riot.** Une clé de **développement expire toutes les 24 h** → le bot
 > renverrait des 403 chaque jour. Pour un bot permanent, demander une **Personal
@@ -18,25 +24,31 @@ Discord ⇄  bot (VM Oracle, systemd)  ──▶  data/stats.db  ──▶  API 
 
 ---
 
-## 1. Créer la VM Oracle Always Free
+## 1. Créer l'instance Lightsail
 
-1. Compte sur <https://www.oracle.com/cloud/free/> (carte bancaire demandée pour
-   vérification, **non débitée** sur les ressources Always Free).
+1. Compte sur <https://aws.amazon.com/> puis ouvrir la **console Lightsail**
+   (<https://lightsail.aws.amazon.com/>). Carte bancaire requise **et facturée**
+   (≈ 5 $/mois).
 2. **Create instance** :
-   - **Image** : Canonical Ubuntu 24.04.
-   - **Shape** : `VM.Standard.A1.Flex` (ARM Ampere, *Always Free eligible*) —
-     p. ex. 1 OCPU / 6 Go. Si « out of capacity », retenter plus tard ou changer
-     de *Availability Domain* / région.
-   - **SSH keys** : téléverser sa clé publique (`~/.ssh/id_ed25519.pub`). Sinon en
-     générer une : `ssh-keygen -t ed25519`.
-3. Noter l'**IP publique** de l'instance.
-4. **Ne pas** ajouter de règle d'entrée pour le port 8787 : le tunnel SSH suffit et
-   garde l'API privée. On ne laisse ouvert que le 22 (SSH), présent par défaut.
+   - **Region / Availability Zone** : la plus proche (p. ex. `eu-west-3`, Paris).
+   - **Platform** : *Linux/Unix*.
+   - **Blueprint** : *OS Only* → **Ubuntu 24.04 LTS**.
+   - **SSH key pair** : *Change SSH key pair* → **Upload new** et téléverser ta clé
+     publique (`~/.ssh/id_ed25519.pub`). Sinon en générer une : `ssh-keygen -t ed25519`.
+     (À défaut, Lightsail génère une clé `.pem` à télécharger — mais uploader la
+     tienne garde le même flux SSH que le reste de la doc.)
+   - **Instance plan** : **5 $/mois** (1 Go RAM). Le 3,50 $ (512 Mo) convient aussi.
+   - **Nommer** l'instance (p. ex. `nemesis`) puis **Create instance**.
+3. **IP statique** (indispensable : sinon l'IP publique change à chaque stop/start) :
+   onglet **Networking** de l'instance → **Create static IP** → l'attacher à
+   l'instance. Noter cette IP.
+4. **Pare-feu** : Lightsail ouvre **SSH (22)** par défaut. **Ne pas** ajouter de règle
+   pour le port 8787 : le tunnel SSH suffit et garde l'API privée.
 
-Se connecter :
+Se connecter (utilisateur par défaut d'Ubuntu sur Lightsail = `ubuntu`) :
 
 ```bash
-ssh ubuntu@<IP_PUBLIQUE>
+ssh ubuntu@<IP_STATIQUE>
 ```
 
 ---
@@ -98,7 +110,7 @@ Le serveur JSON écoute sur `127.0.0.1:8787` **sur la VM**. On le rapatrie en lo
 
 ```powershell
 # Dans un terminal Windows — laisser ouvert le temps de consulter les stats
-ssh -N -L 8787:127.0.0.1:8787 ubuntu@<IP_PUBLIQUE>
+ssh -N -L 8787:127.0.0.1:8787 ubuntu@<IP_STATIQUE>
 ```
 
 Puis lancer l'app bureau **sans aucune config** : son URL par défaut est déjà
@@ -139,4 +151,5 @@ un déploiement gaté par une validation manuelle (SSH → `git reset --hard` + 
 | Le bot ne lit pas les commandes | Intent **Message Content** à activer (portail Discord). |
 | `systemctl status` : `uv: not found` | Corriger le chemin `ExecStart` (voir `which uv`). |
 | Tunnel OK mais app vide | Vérifier `systemctl status nemesis` et `STATS_ENABLED=1`. |
-| VM ARM « out of capacity » | Retenter / autre Availability Domain / autre région. |
+| L'IP a changé après un redémarrage | IP statique non attachée (voir §1.3) — rattacher une *static IP*. |
+| `uv sync` tué (OOM) sur le plan 512 Mo | Passer au plan 1 Go (5 $) : *Instance → Stop → change plan*, ou activer un swap. |
